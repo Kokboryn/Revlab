@@ -6,6 +6,8 @@ pub mod plant;
 pub mod sensors;
 pub mod ecu;
 
+pub mod telemetry;
+
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct ComponentId(pub u32);
 
@@ -93,7 +95,10 @@ impl Kernel {
                     self.queue.push(Entry { at: SimTime::ZERO + offset, comp: id, trig: i as u16 });
                     row.push(Some(period));
                 }
-                Trigger::SelfPaced => row.push(None),
+                Trigger::SelfPaced => {
+                    self.queue.push(Entry { at: SimTime::ZERO, comp: id, trig: i as u16 });
+                    row.push(None);
+                }
             }
         }
         self.periods.push(row);

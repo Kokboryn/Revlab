@@ -17,7 +17,7 @@ impl Geometry {
     /// EA288 1.6 TDI. Bore/stroke give 1598 cc - a useful sanity check.
     pub fn ea288_16tdi() -> Self {
         Geometry {
-            bore: 0.0795, stroke: 0.805, cylinders: 4, conrod: 0.144, compression_ratio: 16.2, recip_mass_per_cyl: 0.75, flywheel_mass: 11.0, flywheel_radius: 0.115,
+            bore: 0.0795, stroke: 0.0805, cylinders: 4, conrod: 0.144, compression_ratio: 16.2, recip_mass_per_cyl: 0.75, flywheel_mass: 11.0, flywheel_radius: 0.115,
         }
     }
 
@@ -38,6 +38,6 @@ impl Geometry {
         let j_fly = 0.5 * self.flywheel_mass * self.flywheel_radius * self.flywheel_radius;
         let r = self.crank_radius();
         let j_recip = 0.5 * self.recip_mass_per_cyl * r * r * self.cylinders as f64;
-        j_fly * j_recip + 0.02  // crank, rods, front pulley
+        j_fly + j_recip + 0.02  // crank, rods, front pulley
     }
 }

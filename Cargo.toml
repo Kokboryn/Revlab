@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/revlab-core", "crates/revlab-kernel"]
+members = ["crates/revlab-cli","crates/revlab-core", "crates/revlab-kernel"]
 
 [workspace.package]
 edition = "2021"

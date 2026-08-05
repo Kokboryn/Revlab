@@ -1,0 +1,8 @@
+[package]
+name = "revlab-cli"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+revlab-core = { path = "../revlab-core" }
+revlab-kernel = { path = "../revlab-kernel" }

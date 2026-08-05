@@ -3,6 +3,7 @@ use crate::{Component, Ctx, Port, Trigger};
 
 pub struct IdleGovernor {
     pub target_rpm: f64,
+    pub q_ff: f64,      // base fueling, mg/stroke - calibration, not a tuning gain
     kp: f64,
     ki: f64,
     integ: f64,
@@ -18,8 +19,7 @@ impl IdleGovernor {
 
     pub fn new(n_meas: Port, q_cmd: Port, target_rpm: f64) -> Self {
         IdleGovernor {
-            target_rpm,
-            kp: 0.004, ki: 0.02, integ: 0.0, q_min: 0.0, q_max: 60.0, dt: Self::PERIOD.as_secs_f64(), n_meas, q_cmd,
+            target_rpm, q_ff: 3.2, kp: 0.004, ki: 0.02, integ: 0.0, q_min: 0.0, q_max: 60.0, dt: Self::PERIOD.as_secs_f64(), n_meas, q_cmd,
         }
     }
 }
@@ -32,7 +32,7 @@ impl Component for IdleGovernor {
     fn step(&mut self, _trig: u16, ctx: &mut Ctx<'_>) {
         let err = self.target_rpm - ctx.bus.get(self.n_meas);
         let trial = self.integ + self.ki * err * self.dt;
-        let u = self.kp * err + trial;
+        let u = self.q_ff + self.kp * err + trial;
         let q = u.clamp(self.q_min, self.q_max);
 
         // Clamping anti-windup: only integrate when not saturated

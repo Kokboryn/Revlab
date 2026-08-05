@@ -14,6 +14,7 @@ pub struct CrankWheel {
     step_rad: f64,              // angular step that produced the current edge
     fault: Fault,
     fault_since: Option<SimTime>,
+    armed: Option<(SimTime, Fault)>,
     timer_tick_ns: u64,         // capture timer resolution
     noise_rpm: f64,
     omega_in: Port,
@@ -28,10 +29,16 @@ impl CrankWheel {
             step_rad: TOOTH_RAD,
             fault: Fault::None,
             fault_since: None,
+            armed: None,
             timer_tick_ns: 50,  // 20 MHz capture timer
             noise_rpm: 1.5,
             omega_in, n_meas_out,
         }
+    }
+
+    pub fn arm_fault(mut self, at: SimTime, f: Fault) -> Self {
+        self.armed = Some((at, f));
+        self
     }
 
     pub fn inject(&mut self, f: Fault, now: SimTime) {
@@ -54,6 +61,14 @@ impl Component for CrankWheel {
     fn triggers(&self) -> Vec<Trigger> { vec![Trigger::SelfPaced] }
 
     fn step(&mut self, _trig: u16, ctx: &mut Ctx<'_>) {
+        if let Some((t, f)) = self.armed {
+            if ctx.now >= t {
+                self.fault = f;
+                self.fault_since = Some(ctx.now);
+                self.armed = None;
+            }
+        }
+
         // --- measure: period since previous edge, quantized by the timer
         let raw_ns = (ctx.now - self.last_edge).as_nanos();
         let q_ns = (raw_ns / self.timer_tick_ns) * self.timer_tick_ns;
