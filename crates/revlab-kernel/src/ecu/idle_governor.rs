@@ -19,7 +19,7 @@ impl IdleGovernor {
 
     pub fn new(n_meas: Port, q_cmd: Port, target_rpm: f64) -> Self {
         IdleGovernor {
-            target_rpm, q_ff: 3.2, kp: 0.004, ki: 0.02, integ: 0.0, q_min: 0.0, q_max: 60.0, dt: Self::PERIOD.as_secs_f64(), n_meas, q_cmd,
+            target_rpm, q_ff: 6.1, kp: 0.004, ki: 0.15, integ: 0.0, q_min: 0.0, q_max: 60.0, dt: Self::PERIOD.as_secs_f64(), n_meas, q_cmd,
         }
     }
 }

@@ -26,7 +26,7 @@ pub struct EngineBuilder {
 impl EngineBuilder {
     pub fn new(geom: Geometry, fuel: Fuel) -> Self {
         EngineBuilder {
-            geom, fuel, fric: ChenFlynn::DI_DIESEL, eta: Box::new(super::efficiency::ConstEta(0.40)),
+            geom, fuel, fric: ChenFlynn::DI_DIESEL, eta: Box::new(super::efficiency::MapEta::di_diesel_typical()),
         }
     }
 

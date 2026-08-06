@@ -27,7 +27,8 @@ fn main() -> std::io::Result<()> {
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
     eprintln!("friction at idle {:.1} Nm", ChenFlynn::DI_DIESEL.torque(&geom, 800.0, 140e5));
 
-    let par = EngineBuilder::new(geom, Fuel::DIESEL_B7).build();
+    let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
+        .build();
     k.add(Box::new(Engine::new(par, q_cmd, omega, theta, IDLE_RPM)));
 
     let wheel = CrankWheel::new(omega, n_meas)
