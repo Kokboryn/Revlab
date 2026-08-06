@@ -4,7 +4,7 @@ use revlab_kernel::{Kernel, Port};
 use revlab_kernel::plant::engine::{Engine, EngineBuilder};
 use revlab_kernel::plant::{friction::ChenFlynn, fuel::Fuel, geometry::Geometry};
 use revlab_kernel::sensors::{crank_wheel::CrankWheel, Fault};
-use revlab_kernel::ecu::idle_governor::IdleGovernor;
+use revlab_kernel::ecu::{Ecu, Rate, idle::IdleTask};
 use revlab_kernel::telemetry::CsvLogger;
 
 const IDLE_RPM: f64 = 800.0;
@@ -36,8 +36,10 @@ fn main() -> std::io::Result<()> {
             Fault::Drift { per_sec: 20.0 });
     k.add(Box::new(wheel));
 
-    k.add(Box::new(IdleGovernor::new(n_meas, q_cmd, IDLE_RPM)));
-
+    k.add(Box::new(
+        Ecu::new(n_meas, q_cmd, 6.0)
+            .task(Rate::Ms10, Box::new(IdleTask::new(IDLE_RPM, 6.1)))
+    ));
     k.add(Box::new(CsvLogger::new(
         "run.csv",
         vec![("omega".into(), omega),
