@@ -7,6 +7,8 @@ use revlab_kernel::sensors::{crank_wheel::CrankWheel, Fault};
 use revlab_kernel::ecu::{Ecu, Rate, idle::IdleTask};
 use revlab_kernel::ecu::torque::{TorqueArbiter, TorqueToFuel};
 use revlab_kernel::telemetry::CsvLogger;
+use revlab_kernel::ecu::diag::SpeedPlausibility;
+use revlab_kernel::sensors::cam_wheel::CamWheel;
 
 const IDLE_RPM: f64 = 800.0;
 const RUN_S: u64 = 20;
@@ -18,12 +20,13 @@ fn main() -> std::io::Result<()> {
 
     let mut k = Kernel::new(seed);
 
-    // Ports. q_cmd is pre-loaded so the engine has fuel at t=0 before the governor's first execution at 1 ms
+    // Ports. q_cmd is preloaded so the engine has fuel at t=0 before the governor's first execution at 1 ms
     let q_cmd: Port     = k.bus.alloc(6.0);
     let omega: Port     = k.bus.alloc(IDLE_RPM * 2.0 * PI / 60.0);
     let theta: Port     = k.bus.alloc(0.0);
     let n_meas: Port     = k.bus.alloc(IDLE_RPM);
     let t_arb: Port     = k.bus.alloc(0.0);
+    let n_cam: Port     = k.bus.alloc(IDLE_RPM);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -36,10 +39,13 @@ fn main() -> std::io::Result<()> {
     let wheel = CrankWheel::new(omega, n_meas)
         .arm_fault(SimTime::ZERO + SimDuration::from_millis(10_000),
             Fault::Drift { per_sec: 20.0 });
+    k.add(Box::new(CamWheel::new(omega, n_cam)));
+
     k.add(Box::new(wheel));
 
     k.add(Box::new(
-        Ecu::new(n_meas, q_cmd, t_arb, 6.0)
+        Ecu::new(n_meas, n_cam, q_cmd, t_arb, 6.0)
+            .task(Rate::Ms10, Box::new(SpeedPlausibility::default()))
             .task(Rate::Ms10, Box::new(IdleTask::new(IDLE_RPM, 17.3)))
             .task(Rate::Ms10, Box::new(TorqueArbiter))
             .task(Rate::Ms10, Box::new(TorqueToFuel::di_diesel(4.0)))

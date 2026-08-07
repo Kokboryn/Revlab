@@ -1,4 +1,5 @@
 pub mod crank_wheel;
+pub mod cam_wheel;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Fault {

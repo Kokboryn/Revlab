@@ -1,5 +1,6 @@
 pub mod idle;
 pub mod torque;
+pub mod diag;
 
 use revlab_core::{SimDuration, SimTime};
 use crate::{Component, Ctx, Port, Trigger};
@@ -32,7 +33,11 @@ impl Rate {
 pub struct EcuState {
     pub now: SimTime,
     // --- inputs, written by inout processing
-    pub n_eng: f64,      // rpm
+    pub n_crank: f64,    // raw
+    pub n_cam: f64,      // raw
+    pub n_eng: f64,      // selected - what the control path uses
+    pub speed_source: diag::SpeedSource,
+    pub fault_mem: diag::FaultEntry,
     pub reqs: [torque::TorqueRequest; torque::N_SOURCES],
     // --- outputs, read by output drivers
     pub q_cmd: f64,     // mg/stroke
@@ -47,23 +52,28 @@ pub trait Task: Send {
 pub struct Ecu {
     state: EcuState,
     tasks: Vec<(Rate, Box<dyn Task>)>,
-    in_n_meas: Port,
+    in_n_crank: Port,
+    in_n_cam: Port,
     out_q_cmd: Port,
     out_t_arb: Port,
 }
 
 impl Ecu {
-    pub fn new(in_n_meas: Port, out_q_cmd: Port, out_t_arb: Port, q_init: f64) -> Self {
+    pub fn new(in_n_crank: Port, in_n_cam: Port, out_q_cmd: Port, out_t_arb: Port, q_init: f64) -> Self {
         Ecu {
             state: EcuState {
                 now: SimTime::ZERO,
+                n_crank: 0.0,
+                n_cam: 0.0,
                 n_eng: 0.0,
+                speed_source: diag::SpeedSource::Crank,
+                fault_mem: diag::FaultEntry::CLEAR,
                 reqs: [torque::TorqueRequest::INACTIVE; torque::N_SOURCES],
                 t_arb: 0.0,
                 q_cmd: q_init,
             },
             tasks: Vec::new(),
-            in_n_meas, out_q_cmd, out_t_arb,
+            in_n_crank, in_n_cam, out_q_cmd, out_t_arb,
         }
     }
 
@@ -86,7 +96,12 @@ impl Component for Ecu {
 
         // --- input processing
         self.state.now = ctx.now;
-        self.state.n_eng = ctx.bus.get(self.in_n_meas);
+        self.state.n_crank = ctx.bus.get(self.in_n_crank);
+        self.state.n_cam = ctx.bus.get(self.in_n_cam);
+        self.state.n_eng = match self.state.speed_source {
+            diag::SpeedSource::Crank => self.state.n_crank,
+            diag::SpeedSource::Cam => self.state.n_cam,
+        };
 
         // --- application
         for (r, t) in self.tasks.iter_mut() {
