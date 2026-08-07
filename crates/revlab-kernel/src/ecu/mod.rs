@@ -1,4 +1,5 @@
 pub mod idle;
+pub mod torque;
 
 use revlab_core::{SimDuration, SimTime};
 use crate::{Component, Ctx, Port, Trigger};
@@ -32,8 +33,10 @@ pub struct EcuState {
     pub now: SimTime,
     // --- inputs, written by inout processing
     pub n_eng: f64,      // rpm
+    pub reqs: [torque::TorqueRequest; torque::N_SOURCES],
     // --- outputs, read by output drivers
     pub q_cmd: f64,     // mg/stroke
+    pub t_arb: f64,     // Nm, arbitrated
 }
 
 pub trait Task: Send {
@@ -46,14 +49,21 @@ pub struct Ecu {
     tasks: Vec<(Rate, Box<dyn Task>)>,
     in_n_meas: Port,
     out_q_cmd: Port,
+    out_t_arb: Port,
 }
 
 impl Ecu {
-    pub fn new(in_n_meas: Port, out_q_cmd: Port, q_init: f64) -> Self {
+    pub fn new(in_n_meas: Port, out_q_cmd: Port, out_t_arb: Port, q_init: f64) -> Self {
         Ecu {
-            state: EcuState { now: SimTime::ZERO, n_eng: 0.0, q_cmd: q_init },
+            state: EcuState {
+                now: SimTime::ZERO,
+                n_eng: 0.0,
+                reqs: [torque::TorqueRequest::INACTIVE; torque::N_SOURCES],
+                t_arb: 0.0,
+                q_cmd: q_init,
+            },
             tasks: Vec::new(),
-            in_n_meas, out_q_cmd,
+            in_n_meas, out_q_cmd, out_t_arb,
         }
     }
 
@@ -85,5 +95,6 @@ impl Component for Ecu {
 
         // --- output drivers
         ctx.bus.set(self.out_q_cmd, self.state.q_cmd);
+        ctx.bus.set(self.out_t_arb, self.state.t_arb);
     }
 }

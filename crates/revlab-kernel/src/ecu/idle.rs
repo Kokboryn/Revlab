@@ -1,20 +1,21 @@
 use super::{EcuState, Task};
+use super::torque::{ReqKind, Source, TorqueRequest};
 
 pub struct IdleTask {
     pub target_rpm: f64,
-    pub q_ff: f64,
-    kp: f64,
-    ki: f64,
+    pub t_ff: f64,      // Nm. base torque to overcome friction
+    kp: f64,            // Nm/rpm
+    ki: f64,            // Nm/(rpm·s)
     integ: f64,
-    q_min: f64,
-    q_max: f64,
+    t_min: f64,
+    t_max: f64,
     dt: f64,
 }
 
 impl IdleTask {
-    pub fn new(target_rpm: f64, q_ff: f64) -> Self {
+    pub fn new(target_rpm: f64, t_ff: f64) -> Self {
         IdleTask {
-            target_rpm, q_ff, kp: 0.004, ki: 0.15, integ: 0.0, q_min: 0.0, q_max: 60.0, dt: 0.010,
+            target_rpm, t_ff, kp: 0.0114, ki: 0.426, integ: 0.0, t_min: 0.0, t_max: 250.0, dt: 0.010,
         }
     }
 }
@@ -25,9 +26,14 @@ impl Task for IdleTask {
     fn run(&mut self, s: &mut EcuState) {
         let err = self.target_rpm - s.n_eng;
         let trial = self.integ + self.ki * err * self.dt;
-        let u = self.q_ff + self.kp * err + trial;
-        let q = u.clamp(self.q_min, self.q_max);
-        if (q - u).abs() < 1e-12 { self.integ = trial; }
-        s.q_cmd = q;
+        let u = self.t_ff + self.kp * err + trial;
+        let t = u.clamp(self.t_min, self.t_max);
+        if (t - u).abs() < 1e-12 { self.integ = trial; }
+
+        s.reqs[Source::Idle as usize] = TorqueRequest {
+            kind: ReqKind::MinLimit,    // idle control is a floor, not a target
+            value: t,
+            active: true,
+        };
     }
 }

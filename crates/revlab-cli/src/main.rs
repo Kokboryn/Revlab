@@ -5,6 +5,7 @@ use revlab_kernel::plant::engine::{Engine, EngineBuilder};
 use revlab_kernel::plant::{friction::ChenFlynn, fuel::Fuel, geometry::Geometry};
 use revlab_kernel::sensors::{crank_wheel::CrankWheel, Fault};
 use revlab_kernel::ecu::{Ecu, Rate, idle::IdleTask};
+use revlab_kernel::ecu::torque::{TorqueArbiter, TorqueToFuel};
 use revlab_kernel::telemetry::CsvLogger;
 
 const IDLE_RPM: f64 = 800.0;
@@ -22,6 +23,7 @@ fn main() -> std::io::Result<()> {
     let omega: Port     = k.bus.alloc(IDLE_RPM * 2.0 * PI / 60.0);
     let theta: Port     = k.bus.alloc(0.0);
     let n_meas: Port     = k.bus.alloc(IDLE_RPM);
+    let t_arb: Port     = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -37,13 +39,16 @@ fn main() -> std::io::Result<()> {
     k.add(Box::new(wheel));
 
     k.add(Box::new(
-        Ecu::new(n_meas, q_cmd, 6.0)
-            .task(Rate::Ms10, Box::new(IdleTask::new(IDLE_RPM, 6.1)))
+        Ecu::new(n_meas, q_cmd, t_arb, 6.0)
+            .task(Rate::Ms10, Box::new(IdleTask::new(IDLE_RPM, 17.3)))
+            .task(Rate::Ms10, Box::new(TorqueArbiter))
+            .task(Rate::Ms10, Box::new(TorqueToFuel::di_diesel(4.0)))
     ));
     k.add(Box::new(CsvLogger::new(
         "run.csv",
         vec![("omega".into(), omega),
              ("n_meas".into(), n_meas),
+             ("t_arb".into(), t_arb),
              ("q_cmd".into(), q_cmd)],
         SimDuration::from_millis(10),
     )?));
