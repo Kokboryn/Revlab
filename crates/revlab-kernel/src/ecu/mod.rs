@@ -36,6 +36,8 @@ pub struct EcuState {
     pub n_crank: f64,    // raw
     pub n_cam: f64,      // raw
     pub n_eng: f64,      // selected - what the control path uses
+    pub n_eng_seq: u64,
+    pub degraded: bool,
     pub speed_source: diag::SpeedSource,
     pub fault_mem: diag::FaultEntry,
     pub reqs: [torque::TorqueRequest; torque::N_SOURCES],
@@ -56,16 +58,19 @@ pub struct Ecu {
     in_n_cam: Port,
     out_q_cmd: Port,
     out_t_arb: Port,
+    out_dtc: Port,
 }
 
 impl Ecu {
-    pub fn new(in_n_crank: Port, in_n_cam: Port, out_q_cmd: Port, out_t_arb: Port, q_init: f64) -> Self {
+    pub fn new(in_n_crank: Port, in_n_cam: Port, out_q_cmd: Port, out_t_arb: Port, out_dtc: Port, q_init: f64) -> Self {
         Ecu {
             state: EcuState {
                 now: SimTime::ZERO,
                 n_crank: 0.0,
                 n_cam: 0.0,
                 n_eng: 0.0,
+                degraded: false,
+                n_eng_seq: 0,
                 speed_source: diag::SpeedSource::Crank,
                 fault_mem: diag::FaultEntry::CLEAR,
                 reqs: [torque::TorqueRequest::INACTIVE; torque::N_SOURCES],
@@ -73,7 +78,7 @@ impl Ecu {
                 q_cmd: q_init,
             },
             tasks: Vec::new(),
-            in_n_crank, in_n_cam, out_q_cmd, out_t_arb,
+            in_n_crank, in_n_cam, out_q_cmd, out_t_arb, out_dtc,
         }
     }
 
@@ -82,6 +87,7 @@ impl Ecu {
         self.tasks.push((rate, t));
         self
     }
+
 }
 
 impl Component for Ecu {
@@ -98,18 +104,34 @@ impl Component for Ecu {
         self.state.now = ctx.now;
         self.state.n_crank = ctx.bus.get(self.in_n_crank);
         self.state.n_cam = ctx.bus.get(self.in_n_cam);
-        self.state.n_eng = match self.state.speed_source {
+
+        let n_new = match self.state.speed_source {
             diag::SpeedSource::Crank => self.state.n_crank,
-            diag::SpeedSource::Cam => self.state.n_cam,
+            diag::SpeedSource::Cam   => self.state.n_cam,
         };
+        // Real firmware gets a "new capture" flag from the timer unit. A bit-identical value means the port was not rewritten.
+
 
         // --- application
         for (r, t) in self.tasks.iter_mut() {
             if *r == rate { t.run(&mut self.state); }
         }
 
+        if n_new != self.state.n_eng {
+            self.state.n_eng = n_new;
+            self.state.n_eng_seq += 1;
+        }
+        self.state.degraded =
+            self.state.fault_mem.state == diag::DtcState::Confirmed;
+
+
         // --- output drivers
         ctx.bus.set(self.out_q_cmd, self.state.q_cmd);
         ctx.bus.set(self.out_t_arb, self.state.t_arb);
+        ctx.bus.set(self.out_dtc, match self.state.fault_mem.state {
+            diag::DtcState::Passed => 0.0,
+            diag::DtcState::Pending => 1.0,
+            diag::DtcState::Confirmed => 2.0,
+        });
     }
 }

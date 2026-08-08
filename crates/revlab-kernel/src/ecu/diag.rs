@@ -1,4 +1,5 @@
 use super::{EcuState, Task};
+use super::torque::{ReqKind, Source, TorqueRequest};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Dtc { P0016CrankCamCorrelation }
@@ -58,5 +59,19 @@ impl Task for SpeedPlausibility {
         } else if bad && e.state == DtcState::Passed {
             e.state = DtcState::Pending;
         }
+    }
+}
+
+pub struct LimpMode { pub torque_max: f64 }
+
+impl Task for LimpMode {
+    fn name(&self) -> &'static str { "LimpMode" }
+
+    fn run(&mut self, s: &mut EcuState) {
+        s.reqs[Source::Protect as usize] = TorqueRequest {
+            kind: ReqKind::MaxLimit,
+            value: self.torque_max,
+            active: s.degraded,
+        };
     }
 }
