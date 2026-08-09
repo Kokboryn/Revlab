@@ -1,24 +1,26 @@
+mod scenario;
+
 use std::f64::consts::PI;
 use revlab_core::{SimDuration, SimTime};
 use revlab_kernel::{Kernel, Port};
 use revlab_kernel::plant::engine::{Engine, EngineBuilder};
 use revlab_kernel::plant::{friction::ChenFlynn, fuel::Fuel, geometry::Geometry};
-use revlab_kernel::sensors::{crank_wheel::CrankWheel, Fault};
+use revlab_kernel::sensors::{crank_wheel::CrankWheel};
 use revlab_kernel::ecu::{Ecu, Rate, idle::IdleTask};
 use revlab_kernel::ecu::torque::{TorqueArbiter, TorqueToFuel};
 use revlab_kernel::telemetry::CsvLogger;
 use revlab_kernel::ecu::diag::{SpeedPlausibility, LimpMode};
 use revlab_kernel::sensors::cam_wheel::CamWheel;
+use scenario::{Scenario, Event, parse_args};
 
 const IDLE_RPM: f64 = 800.0;
-const RUN_S: u64 = 20;
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = parse_args()?;
+    let sc = Scenario::by_name(&args.scenario).ok_or_else(|| format!("unknown scenario '{}'; try --list", args.scenario))?;
+    eprintln!("scenario {} - {}", sc.name, sc.about);
 
-    let seed = std::env::args().nth(1)
-        .and_then(|s| s.parse().ok()).unwrap_or(0xC0FFEE);
-
-    let mut k = Kernel::new(seed);
+    let mut k = Kernel::new(args.seed);
 
     // Ports. q_cmd is preloaded so the engine has fuel at t=0 before the governor's first execution at 1 ms
     let q_cmd: Port     = k.bus.alloc(6.0);
@@ -37,12 +39,18 @@ fn main() -> std::io::Result<()> {
         .build();
     k.add(Box::new(Engine::new(par, q_cmd, omega, theta, IDLE_RPM)));
 
-    let wheel = CrankWheel::new(omega, n_meas)
-        .arm_fault(SimTime::ZERO + SimDuration::from_millis(10_000),
-            Fault::Drift { per_sec: 20.0 });
-    k.add(Box::new(CamWheel::new(omega, n_cam)));
-
-    k.add(Box::new(wheel));
+    let mut crank = CrankWheel::new(omega, n_meas);
+    let mut cam = CamWheel::new(omega, n_cam);
+    for e in &sc.events {
+        let at = |s: f64| SimTime::ZERO
+            + SimDuration::from_millis((s * 1000.0) as u64);
+        match *e {
+            Event::CrankFault { at_s, fault } => crank = crank.arm_fault(at(at_s), fault),
+            Event::CamFault { at_s, fault } => cam = cam.arm_fault(at(at_s), fault),
+        }
+    }
+    k.add(Box::new(crank));
+    k.add(Box::new(cam));
 
     k.add(Box::new(
         Ecu::new(n_meas, n_cam, q_cmd, t_arb,dtc, 6.0)
@@ -53,7 +61,7 @@ fn main() -> std::io::Result<()> {
             .task(Rate::Ms10, Box::new(TorqueToFuel::di_diesel(4.0)))
     ));
     k.add(Box::new(CsvLogger::new(
-        "run.csv",
+        &args.out,
         vec![("omega".into(), omega),
              ("n_crank".into(), n_meas),
              ("n_cam".into(), n_cam),
@@ -63,7 +71,7 @@ fn main() -> std::io::Result<()> {
         SimDuration::from_millis(10),
     )?));
 
-    k.run_until(SimTime::ZERO + SimDuration::from_millis(RUN_S * 1000));
-    eprintln!("done, {} s simulated -> run.csv", RUN_S);
+    k.run_until(SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000));
+    eprintln!("done, {} s simulated -> {}", sc.duration_s, args.out);
     Ok(())
 }

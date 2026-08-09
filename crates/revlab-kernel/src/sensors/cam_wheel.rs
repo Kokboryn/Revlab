@@ -11,6 +11,7 @@ pub struct CamWheel {
     last_edge: SimTime,
     fault: Fault,
     fault_since: Option<SimTime>,
+    armed: Option<(SimTime, Fault)>,
     noise_rpm: f64,
     omega_in: Port,     // true Crank omega
     n_cam_out: Port,    // crank equivalent rpm
@@ -21,9 +22,15 @@ impl CamWheel {
         CamWheel {
             last_edge: SimTime::ZERO,
             fault: Fault::None, fault_since: None,
+            armed: None,
             noise_rpm: 3.0,
             omega_in, n_cam_out,
         }
+    }
+
+    pub fn arm_fault(mut self, at: SimTime, f: Fault) -> Self {
+        self.armed = Some((at, f));
+        self
     }
 }
 
@@ -31,6 +38,14 @@ impl Component for CamWheel {
     fn triggers(&self) -> Vec<Trigger> { vec![Trigger::SelfPaced] }
 
     fn step(&mut self, _t: u16, ctx: &mut Ctx<'_>) {
+        if let Some((t, f)) = self.armed {
+            if ctx.now >= t {
+                self.fault = f;
+                self.fault_since = Some(ctx.now);
+                self.armed = None;
+            }
+        }
+
         let dt_ns = (ctx.now - self.last_edge).as_nanos();
         self.last_edge = ctx.now;
 
