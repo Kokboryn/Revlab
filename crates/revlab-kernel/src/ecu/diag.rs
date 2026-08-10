@@ -30,13 +30,14 @@ impl FaultEntry {
 ///
 /// The previous two-signal version could detect disagreement but not attribute it, so it always substituted cam - and discarded a healthy crank signal whenever cam was the faulty one. The model breaks the tie.
 pub struct SpeedPlausibility {
-    pub threshold_rpm: f64,
+    pub threshold_rpm: f64,     // 40.0 - fault
+    pub freeze_rpm: f64,        // 10.0 - stop trusting the correction
     pub confirm_count: i32,
 }
 
 impl Default for SpeedPlausibility {
     fn default() -> Self {
-        SpeedPlausibility { threshold_rpm: 40.0, confirm_count: 30 }
+        SpeedPlausibility { threshold_rpm: 40.0, confirm_count: 30, freeze_rpm: 10.0 }
     }
 }
 
@@ -83,12 +84,19 @@ impl Task for SpeedPlausibility {
         let margin = self.threshold_rpm * 0.5;
 
         // Both far from the model: cannot attribute. Neither sensor is trustworthy and neither is provably wrong - a genuine limp condition ratber than a sensor DTC
-        let unattributable = d_crank > margin && d_cam > margin;
+        let decisive = (d_crank - d_cam).abs() > self.freeze_rpm;
+        let unattributable = !decisive;
 
         let now = s.now.as_secs_f64();
         let n = s.n_eng;
         let crank_bad = !unattributable && d_crank > d_cam;
         let cam_bad = !unattributable && d_cam > d_crank;
+
+        let delta = (s.n_crank - s.n_cam).abs();
+        // Freeze well before the fault threshold. The correction pulls the model toward the CONTROL sensor, so a fault in that sensor contaminates the very model meant to arbitrate it.
+        // Going open-loop at the first hint keeps the model physics dominated across the detection window.
+        s.freeze_adaptation = delta > self.freeze_rpm;
+        let disagree = delta > self.threshold_rpm;
 
         if Self::debounce(&mut s.fault_mem[Sensor::Crank as usize], crank_bad, self.confirm_count, n, now) {
             s.speed_source = SpeedSource::Cam;  // substitute
