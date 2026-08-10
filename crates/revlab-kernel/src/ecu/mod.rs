@@ -1,6 +1,7 @@
 pub mod idle;
 pub mod torque;
 pub mod diag;
+pub mod observer;
 
 use revlab_core::{SimDuration, SimTime};
 use crate::{Component, Ctx, Port, Trigger};
@@ -37,11 +38,15 @@ pub struct EcuState {
     pub n_cam: f64,      // raw
     pub n_eng: f64,      // selected - what the control path uses
     pub n_eng_seq: u64,
-    pub degraded: bool,
     pub speed_source: diag::SpeedSource,
-    pub fault_mem: diag::FaultEntry,
     pub reqs: [torque::TorqueRequest; torque::N_SOURCES],
+    pub n_model: f64,
+    pub model_valid: bool,
+    pub freeze_adaptation: bool,
+    pub unattributable: bool,
+    pub fault_mem: [diag::FaultEntry; diag::N_SENSORS],
     // --- outputs, read by output drivers
+    pub degraded: bool,
     pub q_cmd: f64,     // mg/stroke
     pub t_arb: f64,     // Nm, arbitrated
 }
@@ -59,26 +64,31 @@ pub struct Ecu {
     out_q_cmd: Port,
     out_t_arb: Port,
     out_dtc: Port,
+    out_n_model: Port
 }
 
 impl Ecu {
-    pub fn new(in_n_crank: Port, in_n_cam: Port, out_q_cmd: Port, out_t_arb: Port, out_dtc: Port, q_init: f64) -> Self {
+    pub fn new(in_n_crank: Port, in_n_cam: Port, out_q_cmd: Port, out_t_arb: Port, out_dtc: Port, out_n_model: Port, q_init: f64) -> Self {
         Ecu {
             state: EcuState {
                 now: SimTime::ZERO,
                 n_crank: 0.0,
                 n_cam: 0.0,
                 n_eng: 0.0,
-                degraded: false,
                 n_eng_seq: 0,
                 speed_source: diag::SpeedSource::Crank,
-                fault_mem: diag::FaultEntry::CLEAR,
+                fault_mem: [diag::FaultEntry::CLEAR; diag::N_SENSORS],
+                degraded: false,
                 reqs: [torque::TorqueRequest::INACTIVE; torque::N_SOURCES],
                 t_arb: 0.0,
                 q_cmd: q_init,
+                n_model: 0.0,
+                model_valid: false,
+                freeze_adaptation: false,
+                unattributable: false,
             },
             tasks: Vec::new(),
-            in_n_crank, in_n_cam, out_q_cmd, out_t_arb, out_dtc,
+            in_n_crank, in_n_cam, out_q_cmd, out_t_arb, out_dtc, out_n_model,
         }
     }
 
@@ -110,28 +120,27 @@ impl Component for Ecu {
             diag::SpeedSource::Cam   => self.state.n_cam,
         };
         // Real firmware gets a "new capture" flag from the timer unit. A bit-identical value means the port was not rewritten.
-
+        if n_new != self.state.n_eng {
+            self.state.n_eng = n_new;
+            self.state.n_eng_seq += 1;
+        }
 
         // --- application
         for (r, t) in self.tasks.iter_mut() {
             if *r == rate { t.run(&mut self.state); }
         }
 
-        if n_new != self.state.n_eng {
-            self.state.n_eng = n_new;
-            self.state.n_eng_seq += 1;
-        }
-        self.state.degraded =
-            self.state.fault_mem.state == diag::DtcState::Confirmed;
-
-
         // --- output drivers
+        let worst = self.state.fault_mem.iter()
+            .map(|e| match e.state {
+                diag::DtcState::Passed => 0.0,
+                diag::DtcState::Pending => 1.0,
+                diag::DtcState::Confirmed => 2.0,
+            })
+            .fold(0.0_f64, f64::max);
         ctx.bus.set(self.out_q_cmd, self.state.q_cmd);
         ctx.bus.set(self.out_t_arb, self.state.t_arb);
-        ctx.bus.set(self.out_dtc, match self.state.fault_mem.state {
-            diag::DtcState::Passed => 0.0,
-            diag::DtcState::Pending => 1.0,
-            diag::DtcState::Confirmed => 2.0,
-        });
+        ctx.bus.set(self.out_dtc, worst);
+        ctx.bus.set(self.out_n_model, self.state.n_model);
     }
 }

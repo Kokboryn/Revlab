@@ -10,6 +10,7 @@ use revlab_kernel::ecu::{Ecu, Rate, idle::IdleTask};
 use revlab_kernel::ecu::torque::{TorqueArbiter, TorqueToFuel};
 use revlab_kernel::telemetry::CsvLogger;
 use revlab_kernel::ecu::diag::{SpeedPlausibility, LimpMode};
+use revlab_kernel::ecu::observer::SpeedObserver;
 use revlab_kernel::sensors::cam_wheel::CamWheel;
 use scenario::{Scenario, Event, parse_args};
 
@@ -30,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_arb: Port     = k.bus.alloc(0.0);
     let n_cam: Port     = k.bus.alloc(IDLE_RPM);
     let dtc: Port = k.bus.alloc(0.0);
+    let n_model: Port    = k.bus.alloc(IDLE_RPM);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -53,7 +55,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(cam));
 
     k.add(Box::new(
-        Ecu::new(n_meas, n_cam, q_cmd, t_arb,dtc, 6.0)
+        Ecu::new(n_meas, n_cam, q_cmd, t_arb, dtc, n_model, 6.0)
+            .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedPlausibility::default()))
             .task(Rate::Ms10, Box::new(LimpMode { torque_max: 40.0 }))
             .task(Rate::Ms10, Box::new(IdleTask::new(IDLE_RPM, 17.3)))
@@ -65,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![("omega".into(), omega),
              ("n_crank".into(), n_meas),
              ("n_cam".into(), n_cam),
+             ("n_model".into(), n_model),
              ("dtc".into(), dtc),
              ("t_arb".into(), t_arb),
              ("q_cmd".into(), q_cmd)],
@@ -72,6 +76,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?));
 
     k.run_until(SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000));
+    drop(k);
     eprintln!("done, {} s simulated -> {}", sc.duration_s, args.out);
+
+    if args.plot {
+        let title = format!("Revlab - {} (seed {})", sc.name, args.seed);
+        match std::process::Command::new("python")
+            .args(["tools/plot.py", &args.out, "--title", &title])
+            .status()
+        {
+            Ok(s) if s.success() => {}
+            Ok(_) => eprintln!("plot failed (see traceback above)"),
+            Err(e) => eprintln!("could not run tools/plot.py: {e}"),
+        }
+    }
     Ok(())
 }

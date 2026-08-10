@@ -40,10 +40,11 @@ pub struct Args {
     pub scenario: String,
     pub seed: u64,
     pub out: String,
+    pub plot: bool
 }
 
 pub fn parse_args() -> Result<Args, String> {
-    let mut a = Args { scenario: "crank_drift".into(), seed: 0xC0FFEE, out: "run.csv".into() };
+    let mut a = Args { scenario: "crank_drift".into(), seed: 0xC0FFEE, out: "run.csv".into(), plot: false };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         match k.as_str() {
@@ -54,6 +55,7 @@ pub fn parse_args() -> Result<Args, String> {
             "--scenario" => a.scenario = it.next().ok_or("--scenario needs a value")?,
             "--seed" => a.seed = it.next().ok_or("--seed needs a value")?.parse().map_err(|_| "--seed must be an integer")?,
             "--out" => a.out = it.next().ok_or("--out needs a value")?,
+            "--plot" => a.plot = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
