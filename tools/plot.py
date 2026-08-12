@@ -67,10 +67,12 @@ def main():
         panels.append('torque')
     if 'q_cmd' in c:
         panels.append('fuel')
+    if 'p_im' in c:
+        panels.append('air')
     if not panels:
         sys.exit('nothing plottable: need omega, t_arb or q_cmd')
 
-    heights = {'speed': 2.4, 'torque': 1.0, 'fuel': 1.0}
+    heights = {'speed': 2.4, 'torque': 1.0, 'fuel': 1.0, 'air': 1.2}
     fig, axes = plt.subplots(
         len(panels), 1, sharex=True,
         figsize=(10, 1.7 * sum(heights[p] for p in panels)),
@@ -116,6 +118,19 @@ def main():
         p = ax['fuel']
         p.plot(t, c['q_cmd'], lw=1.2, color=C_FUEL)
         p.set_ylabel('fuel cmd\n[mg/stroke]')
+
+    # --- airpath
+    if 'air' in ax:
+        p = ax['air']
+        l1, =  p.plot(t, [(101325.0 - v) for v in c['p_im']], lw=1.2, color='#1f7a8c', label='intake depression')
+        p.set_ylabel('intake\ndepression [Pa]')
+        handles = [l1]
+        if 'afr' in c:
+            q = p.twinx()
+            l2, = q.plot(t, c['afr'], lw=1.0, color='#8c8c1f', alpha=0.8, label='AFR')
+            q.set_ylabel('AFR', color='#8c8c1f')
+            handles.append(l2)
+        p.legend(handles=handles, loc='best', fontsize=8.5, framealpha=0.95)
 
     for axis in axes:
         axis.grid(alpha=0.22)

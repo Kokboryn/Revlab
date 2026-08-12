@@ -1,7 +1,8 @@
 use std::f64::consts::PI;
-use revlab_core::{SimDuration, SimTime};
+use revlab_core::{SimDuration};
 use crate::{Component, Ctx, Port, Trigger};
 use super::{efficiency::Efficiency, friction::ChenFlynn, fuel::Fuel, geometry::Geometry};
+use super::gas::R_AIR;
 
 /// Flat, resolved parameters. The solver never does lookups or unit conversion in the loop - everything is resolved once at build time.
 pub struct EnginePar {
@@ -57,18 +58,26 @@ pub struct Engine {
     q_cmd: Port,
     omega_out: Port,
     theta_out: Port,
+    p_im: Port,
+    t_im: Port,
+    m_dot_air_out: Port,
+    afr_out: Port,
     dt: f64,
 }
 
 impl Engine {
     pub const STEP: SimDuration = SimDuration::from_millis(1);
 
-    pub fn new(p: EnginePar, q_cmd: Port, omega_out: Port, theta_out: Port, idle_rpm: f64) -> Self {
+    pub fn new(p: EnginePar, q_cmd: Port, omega_out: Port, theta_out: Port,
+               p_im: Port, t_im: Port, m_dot_air_out: Port, afr_out: Port,
+               idle_rpm: f64) -> Self {
         Engine {
             omega: idle_rpm * 2.0 * PI / 60.0,
             theta: 0.0,
             running: true,
-            p, q_cmd, omega_out, theta_out, dt: Self::STEP.as_secs_f64(),
+            p, q_cmd, omega_out, theta_out,
+            p_im, t_im, m_dot_air_out, afr_out,
+            dt: Self::STEP.as_secs_f64(),
         }
     }
 
@@ -86,6 +95,12 @@ impl Engine {
 
     fn friction_torque(&self) -> f64 {
         self.p.fric.torque(&self.p.geom, self.rpm().max(0.0), self.p.p_max_nom)
+    }
+
+    /// Speed-density: ṁ = η_vol · V_d · N · p / (120 · R · T). The 120 is 2 revolutions per cycle x 60 s/min
+    fn air_flow(&self, p_im: f64, t_im: f64) -> f64 {
+        let eta_vol = 0.90; // TODO: map over (N, p_im) Diesels sit high and flat - no throttling loss
+        eta_vol * self.p.geom.displacement() * self.rpm() * p_im / (120.0 * R_AIR * t_im)
     }
 }
 
@@ -109,5 +124,12 @@ impl Component for Engine {
         ctx.bus.set(self.omega_out, self.omega);
         ctx.bus.set(self.theta_out, self.theta);
         let _ = ctx.now;
+        let p_im = ctx.bus.get(self.p_im);
+        let t_im = ctx.bus.get(self.t_im);
+        let m_air = self.air_flow(p_im, t_im).max(0.0);
+        // fuel mass flow: q per stroke x cylinders x cycles per second
+        let m_fuel = q.clamp(0.0, self.p.q_max) * 1e-6 * self.p.cylinders * self.rpm() / 120.0;
+        ctx.bus.set(self.m_dot_air_out, m_air);
+        ctx.bus.set(self.afr_out, if m_fuel > 1e-9 { m_air / m_fuel } else { 999.0 });
     }
 }

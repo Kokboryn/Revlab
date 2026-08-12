@@ -13,6 +13,7 @@ use revlab_kernel::ecu::diag::{SpeedPlausibility, LimpMode};
 use revlab_kernel::ecu::observer::SpeedObserver;
 use revlab_kernel::sensors::cam_wheel::CamWheel;
 use scenario::{Scenario, Event, parse_args};
+use revlab_kernel::plant::{environment::Environment, intake::IntakeManifold};
 
 const IDLE_RPM: f64 = 800.0;
 
@@ -24,22 +25,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut k = Kernel::new(args.seed);
 
     // Ports. q_cmd is preloaded so the engine has fuel at t=0 before the governor's first execution at 1 ms
-    let q_cmd: Port     = k.bus.alloc(6.0);
-    let omega: Port     = k.bus.alloc(IDLE_RPM * 2.0 * PI / 60.0);
-    let theta: Port     = k.bus.alloc(0.0);
-    let n_meas: Port     = k.bus.alloc(IDLE_RPM);
-    let t_arb: Port     = k.bus.alloc(0.0);
-    let n_cam: Port     = k.bus.alloc(IDLE_RPM);
-    let dtc: Port = k.bus.alloc(0.0);
-    let n_model: Port    = k.bus.alloc(IDLE_RPM);
+    let q_cmd: Port         = k.bus.alloc(6.0);
+    let omega: Port         = k.bus.alloc(IDLE_RPM * 2.0 * PI / 60.0);
+    let theta: Port         = k.bus.alloc(0.0);
+    let n_meas: Port        = k.bus.alloc(IDLE_RPM);
+    let t_arb: Port         = k.bus.alloc(0.0);
+    let n_cam: Port         = k.bus.alloc(IDLE_RPM);
+    let dtc: Port           = k.bus.alloc(0.0);
+    let n_model: Port       = k.bus.alloc(IDLE_RPM);
+    let p_amb: Port         = k.bus.alloc(101_325.0);
+    let t_amb: Port         = k.bus.alloc(293.15);
+    let p_im: Port          = k.bus.alloc(101_325.0);
+    let t_im: Port          = k.bus.alloc(293.15);
+    let m_dot_air: Port     = k.bus.alloc(0.0);
+    let m_dot_maf: Port     = k.bus.alloc(0.0);
+    let afr: Port           = k.bus.alloc(999.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
     eprintln!("friction at idle {:.1} Nm", ChenFlynn::DI_DIESEL.torque(&geom, 800.0, 140e5));
 
+    k.add(Box::new(Environment::standard(p_amb, t_amb)));
+    k.add(Box::new(IntakeManifold::new(0.0025, p_amb, t_amb, m_dot_air, p_im, t_im, m_dot_maf, 101_325.0, 293.15)));
+
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
-    k.add(Box::new(Engine::new(par, q_cmd, omega, theta, IDLE_RPM)));
+    k.add(Box::new(Engine::new(par, q_cmd, omega, theta, p_im, t_im, m_dot_air, afr, IDLE_RPM)));
 
     let mut crank = CrankWheel::new(omega, n_meas);
     let mut cam = CamWheel::new(omega, n_cam);
@@ -71,7 +82,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("n_model".into(), n_model),
              ("dtc".into(), dtc),
              ("t_arb".into(), t_arb),
-             ("q_cmd".into(), q_cmd)],
+             ("q_cmd".into(), q_cmd),
+             ("p_im".into(), p_im),
+             ("m_air".into(), m_dot_air),
+             ("afr".into(), afr)],
         SimDuration::from_millis(10),
     )?));
 
