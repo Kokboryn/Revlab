@@ -65,13 +65,14 @@ impl Task for SpeedPlausibility {
     fn name(&self) -> &'static str { "SpeedPlausibility" }
 
     fn run(&mut self, s: &mut EcuState) {
-        let disagree = (s.n_crank - s.n_cam).abs() > self.threshold_rpm;
+        let delta = (s.n_crank - s.n_cam).abs();
 
-        // Tell the observer to stop tracking while we evaluate. Read by SpeedObserver on the NEXT cycle, which is fine - one 10 ms lag against a debounce window of 300 ms.
-        s.freeze_adaptation = disagree;
+        // Freeze well before the fault threshold. The correction pulls the model toward the CONTROL sensor, so a fault in that sensor contaminates the very model meant to arbitrate it.
+        // Going open-loop at the first hint keeps the model physics dominated across the detection window.
+        s.freeze_adaptation = delta > self.freeze_rpm;
+        let disagree = delta > self.threshold_rpm;
 
         if !disagree || !s.model_valid {
-            // heal both entries
             let now = s.now.as_secs_f64();
             let n = s.n_eng;
             Self::debounce(&mut s.fault_mem[Sensor::Crank as usize], false, self.confirm_count, n, now);
@@ -80,23 +81,16 @@ impl Task for SpeedPlausibility {
         }
 
         let d_crank = (s.n_crank - s.n_model).abs();
-        let d_cam = (s.n_cam - s.n_model).abs();
-        let margin = self.threshold_rpm * 0.5;
+        let d_cam   = (s.n_cam   - s.n_model).abs();
 
-        // Both far from the model: cannot attribute. Neither sensor is trustworthy and neither is provably wrong - a genuine limp condition ratber than a sensor DTC
+        // Comparative, not absolute: attribute only when one sensor is decisively closer to the mode. Both merely being far away means nothing is trustworthy.
         let decisive = (d_crank - d_cam).abs() > self.freeze_rpm;
         let unattributable = !decisive;
 
         let now = s.now.as_secs_f64();
         let n = s.n_eng;
         let crank_bad = !unattributable && d_crank > d_cam;
-        let cam_bad = !unattributable && d_cam > d_crank;
-
-        let delta = (s.n_crank - s.n_cam).abs();
-        // Freeze well before the fault threshold. The correction pulls the model toward the CONTROL sensor, so a fault in that sensor contaminates the very model meant to arbitrate it.
-        // Going open-loop at the first hint keeps the model physics dominated across the detection window.
-        s.freeze_adaptation = delta > self.freeze_rpm;
-        let disagree = delta > self.threshold_rpm;
+        let cam_bad   = !unattributable && d_cam > d_crank;
 
         if Self::debounce(&mut s.fault_mem[Sensor::Crank as usize], crank_bad, self.confirm_count, n, now) {
             s.speed_source = SpeedSource::Cam;  // substitute
