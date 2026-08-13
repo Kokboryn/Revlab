@@ -54,8 +54,8 @@ impl SpeedPlausibility {
             e.freeze_time_s = t;
             return true;                    // newly confirmed
         }
-        if bad && e.state == DtcState::Passed {
-            e.state = DtcState::Pending;
+        if !bad && e.fail_count == 0 && e.state == DtcState::Pending {
+            e.state = DtcState::Passed;
         }
         false
     }

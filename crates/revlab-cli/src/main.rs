@@ -14,6 +14,8 @@ use revlab_kernel::ecu::observer::SpeedObserver;
 use revlab_kernel::sensors::cam_wheel::CamWheel;
 use scenario::{Scenario, Event, parse_args};
 use revlab_kernel::plant::{environment::Environment, intake::IntakeManifold};
+use revlab_kernel::plant::boost::FixedBoost;
+use revlab_kernel::plant::load::LoadProfile;
 
 const IDLE_RPM: f64 = 800.0;
 
@@ -40,28 +42,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let m_dot_air: Port     = k.bus.alloc(0.0);
     let m_dot_maf: Port     = k.bus.alloc(0.0);
     let afr: Port           = k.bus.alloc(999.0);
+    let t_load: Port        = k.bus.alloc(0.0);
+    let m_comp: Port        = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
     eprintln!("friction at idle {:.1} Nm", ChenFlynn::DI_DIESEL.torque(&geom, 800.0, 140e5));
 
     k.add(Box::new(Environment::standard(p_amb, t_amb)));
-    k.add(Box::new(IntakeManifold::new(0.0025, p_amb, t_amb, m_dot_air, p_im, t_im, m_dot_maf, 101_325.0, 293.15)));
+
+    k.add(Box::new(FixedBoost::new(101_325.0, p_im, m_dot_air, m_comp)));
+    k.add(Box::new(IntakeManifold::new(0.0025, t_amb, m_dot_air, m_comp, p_im, t_im, m_dot_maf, 101_325.0, 293.15)));
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
-    k.add(Box::new(Engine::new(par, q_cmd, omega, theta, p_im, t_im, m_dot_air, afr, IDLE_RPM)));
+    k.add(Box::new(Engine::new(par, q_cmd, omega, theta, p_im, t_im, m_dot_air, afr, t_load, IDLE_RPM)));
 
+    let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
     let mut crank = CrankWheel::new(omega, n_meas);
     let mut cam = CamWheel::new(omega, n_cam);
     for e in &sc.events {
-        let at = |s: f64| SimTime::ZERO
-            + SimDuration::from_millis((s * 1000.0) as u64);
+        let at = |s: f64| SimTime::ZERO + SimDuration::from_millis((s * 1000.0) as u64);
         match *e {
             Event::CrankFault { at_s, fault } => crank = crank.arm_fault(at(at_s), fault),
             Event::CamFault { at_s, fault } => cam = cam.arm_fault(at(at_s), fault),
+            Event::Load { at_s, torque } => load_steps.push((at(at_s), torque)),
         }
     }
+    k.add(Box::new(LoadProfile::new(load_steps, t_load)));
     k.add(Box::new(crank));
     k.add(Box::new(cam));
 
@@ -85,7 +93,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("q_cmd".into(), q_cmd),
              ("p_im".into(), p_im),
              ("m_air".into(), m_dot_air),
-             ("afr".into(), afr)],
+             ("afr".into(), afr),
+             ("t_load".into(), t_load)],
         SimDuration::from_millis(10),
     )?));
 

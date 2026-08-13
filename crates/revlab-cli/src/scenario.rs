@@ -4,6 +4,7 @@ use revlab_kernel::sensors::Fault;
 pub enum Event {
     CrankFault { at_s: f64, fault: Fault },
     CamFault   { at_s: f64, fault: Fault },
+    Load       { at_s: f64, torque: f64 },
 }
 
 pub struct Scenario {
@@ -19,16 +20,18 @@ pub const NAMES: &[(&str, &str)] = &[
     ("crank_stuck", "crank sensor freezes at 800 rpm from t=10s"),
     ("crank_open", "crank signal lost at t=10s"),
     ("cam_drift", "CAM drifts instead - does the monitor lame the right sensor?"),
+    ("load_step", "60 Nm load applied at t=5s - spools the turbo"),
 ];
 
 impl Scenario {
     pub fn by_name(n: &str) -> Option<Scenario> {
         let (duration_s, events): (u64, Vec<Event>) = match n {
-            "nominal" => (20, vec![]),
-            "crank_drift" => (20, vec![Event::CrankFault { at_s: 10.0, fault: Fault::Drift { per_sec: 20.0 } }]),
-            "crank_stuck" => (20, vec![Event::CrankFault { at_s: 10.0, fault: Fault::StuckAt(800.0) }]),
-            "crank_open" => (20, vec![Event::CrankFault { at_s: 10.0, fault: Fault::OpenCircuit }]),
-            "cam_drift" => (20, vec![Event::CamFault { at_s: 10.0, fault: Fault::Drift {per_sec: 20.0 } }]),
+            "nominal"       => (20, vec![]),
+            "crank_drift"   => (20, vec![Event::CrankFault { at_s: 10.0, fault: Fault::Drift { per_sec: 20.0 } }]),
+            "crank_stuck"   => (20, vec![Event::CrankFault { at_s: 10.0, fault: Fault::StuckAt(800.0) }]),
+            "crank_open"    => (20, vec![Event::CrankFault { at_s: 10.0, fault: Fault::OpenCircuit }]),
+            "cam_drift"     => (20, vec![Event::CamFault { at_s: 10.0, fault: Fault::Drift {per_sec: 20.0 } }]),
+            "load_step"     => (20, vec![Event::Load { at_s: 5.0, torque: 60.0 }]),
             _ => return None,
         };
         let about = NAMES.iter().find(|(k,_)| *k==n).map(|(_, v)| *v)?;
