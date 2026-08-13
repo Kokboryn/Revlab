@@ -5,6 +5,7 @@ pub enum Event {
     CrankFault { at_s: f64, fault: Fault },
     CamFault   { at_s: f64, fault: Fault },
     Load       { at_s: f64, torque: f64 },
+    Speed      { at_s: f64, rpm: f64 },
 }
 
 pub struct Scenario {
@@ -21,6 +22,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("crank_open", "crank signal lost at t=10s"),
     ("cam_drift", "CAM drifts instead - does the monitor lame the right sensor?"),
     ("load_step", "60 Nm load applied at t=5s - spools the turbo"),
+    ("spool", "2500 rpm + 8000 Nm at t=5s - turbo spools"),
 ];
 
 impl Scenario {
@@ -32,6 +34,7 @@ impl Scenario {
             "crank_open"    => (20, vec![Event::CrankFault { at_s: 10.0, fault: Fault::OpenCircuit }]),
             "cam_drift"     => (20, vec![Event::CamFault { at_s: 10.0, fault: Fault::Drift {per_sec: 20.0 } }]),
             "load_step"     => (20, vec![Event::Load { at_s: 5.0, torque: 60.0 }]),
+            "spool"         => (20, vec![Event::Speed { at_s: 5.0, rpm: 2500.0 }, Event::Load { at_s: 5.0, torque: 80.0 }]),
             _ => return None,
         };
         let about = NAMES.iter().find(|(k,_)| *k==n).map(|(_, v)| *v)?;

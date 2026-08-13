@@ -62,6 +62,7 @@ pub struct Engine {
     t_im: Port,
     m_dot_air_out: Port,
     afr_out: Port,
+    m_fuel_out: Port,
     t_load: Port,
     dt: f64,
 }
@@ -71,13 +72,13 @@ impl Engine {
 
     pub fn new(p: EnginePar, q_cmd: Port, omega_out: Port, theta_out: Port,
                p_im: Port, t_im: Port, m_dot_air_out: Port, afr_out: Port,
-               t_load: Port, idle_rpm: f64) -> Self {
+               m_fuel_out: Port, t_load: Port, idle_rpm: f64) -> Self {
         Engine {
             omega: idle_rpm * 2.0 * PI / 60.0,
             theta: 0.0,
             running: true,
             p, q_cmd, omega_out, theta_out,
-            p_im, t_im, m_dot_air_out, afr_out, t_load,
+            p_im, t_im, m_dot_air_out, afr_out, t_load, m_fuel_out,
             dt: Self::STEP.as_secs_f64(),
         }
     }
@@ -133,5 +134,6 @@ impl Component for Engine {
         let m_fuel = q.clamp(0.0, self.p.q_max) * 1e-6 * self.p.cylinders * self.rpm() / 120.0;
         ctx.bus.set(self.m_dot_air_out, m_air);
         ctx.bus.set(self.afr_out, if m_fuel > 1e-9 { m_air / m_fuel } else { 999.0 });
+        ctx.bus.set(self.m_fuel_out, m_fuel);
     }
 }

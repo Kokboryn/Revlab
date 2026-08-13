@@ -49,6 +49,8 @@ pub struct EcuState {
     pub degraded: bool,
     pub q_cmd: f64,     // mg/stroke
     pub t_arb: f64,     // Nm, arbitrated
+    pub target_rpm: f64,
+
 }
 
 pub trait Task: Send {
@@ -60,6 +62,7 @@ pub struct Ecu {
     state: EcuState,
     tasks: Vec<(Rate, Box<dyn Task>)>,
     in_n_crank: Port,
+    in_speed_req: Port,
     in_n_cam: Port,
     out_q_cmd: Port,
     out_t_arb: Port,
@@ -68,7 +71,7 @@ pub struct Ecu {
 }
 
 impl Ecu {
-    pub fn new(in_n_crank: Port, in_n_cam: Port, out_q_cmd: Port, out_t_arb: Port, out_dtc: Port, out_n_model: Port, q_init: f64) -> Self {
+    pub fn new(in_n_crank: Port, in_n_cam: Port, in_speed_req: Port, out_q_cmd: Port, out_t_arb: Port, out_dtc: Port, out_n_model: Port, q_init: f64) -> Self {
         Ecu {
             state: EcuState {
                 now: SimTime::ZERO,
@@ -83,12 +86,13 @@ impl Ecu {
                 t_arb: 0.0,
                 q_cmd: q_init,
                 n_model: 0.0,
+                target_rpm: 800.0,
                 model_valid: false,
                 freeze_adaptation: false,
                 unattributable: false,
             },
             tasks: Vec::new(),
-            in_n_crank, in_n_cam, out_q_cmd, out_t_arb, out_dtc, out_n_model,
+            in_n_crank, in_n_cam, in_speed_req, out_q_cmd, out_t_arb, out_dtc, out_n_model,
         }
     }
 
@@ -114,6 +118,7 @@ impl Component for Ecu {
         self.state.now = ctx.now;
         self.state.n_crank = ctx.bus.get(self.in_n_crank);
         self.state.n_cam = ctx.bus.get(self.in_n_cam);
+        self.state.target_rpm = ctx.bus.get(self.in_speed_req);
 
         let n_new = match self.state.speed_source {
             diag::SpeedSource::Crank => self.state.n_crank,

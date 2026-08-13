@@ -109,7 +109,7 @@ impl Component for Turbo {
         let h = self.dt / N_SUB as f64;
         for _ in 0..N_SUB {
             let w = self.omega.max(200.0);
-            self.omega += (p_t * selfeta_mech - p_c) / (self.j_tc * w) * h;
+            self.omega += (p_t * self.eta_mech - p_c) / (self.j_tc * w) * h;
             self.omega = self.omega.clamp(200.0, 25_000.0);
         }
 

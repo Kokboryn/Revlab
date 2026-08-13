@@ -14,8 +14,9 @@ use revlab_kernel::ecu::observer::SpeedObserver;
 use revlab_kernel::sensors::cam_wheel::CamWheel;
 use scenario::{Scenario, Event, parse_args};
 use revlab_kernel::plant::{environment::Environment, intake::IntakeManifold};
-use revlab_kernel::plant::boost::FixedBoost;
 use revlab_kernel::plant::load::LoadProfile;
+use revlab_kernel::plant::turbo::Turbo;
+use revlab_kernel::plant::exhaust::ExhaustManifold;
 
 const IDLE_RPM: f64 = 800.0;
 
@@ -44,21 +45,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let afr: Port           = k.bus.alloc(999.0);
     let t_load: Port        = k.bus.alloc(0.0);
     let m_comp: Port        = k.bus.alloc(0.0);
+    let p_em: Port          = k.bus.alloc(101_325.0);
+    let t_em: Port          = k.bus.alloc(500.0);
+    let n_tc: Port          = k.bus.alloc(0.0);
+    let m_turb: Port        = k.bus.alloc(0.0);
+    let m_fuel: Port        = k.bus.alloc(0.0);
+    let vnt: Port           = k.bus.alloc(1.0);     // vanes open, no control yet
+    let t_charge: Port      = k.bus.alloc(293.15);
+    let speed_req: Port     = k.bus.alloc(IDLE_RPM);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
     eprintln!("friction at idle {:.1} Nm", ChenFlynn::DI_DIESEL.torque(&geom, 800.0, 140e5));
 
     k.add(Box::new(Environment::standard(p_amb, t_amb)));
+    k.add(Box::new(Turbo::vnt_small_diesel(p_amb, t_amb, p_im, p_em, t_em, vnt, m_comp, t_charge,m_turb, n_tc)));
+    k.add(Box::new(IntakeManifold::new(0.0025, t_charge, m_dot_air, m_comp, p_im, t_im, m_dot_maf, 101_325.0, 293.15)));
 
-    k.add(Box::new(FixedBoost::new(101_325.0, p_im, m_dot_air, m_comp)));
+    k.add(Box::new(ExhaustManifold::new(0.0015, m_dot_air, m_fuel, t_im, m_turb, p_em, t_em, 101_325.0, 500.0)));
+
     k.add(Box::new(IntakeManifold::new(0.0025, t_amb, m_dot_air, m_comp, p_im, t_im, m_dot_maf, 101_325.0, 293.15)));
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
-    k.add(Box::new(Engine::new(par, q_cmd, omega, theta, p_im, t_im, m_dot_air, afr, t_load, IDLE_RPM)));
+    k.add(Box::new(Engine::new(par, q_cmd, omega, theta, p_im, t_im, m_dot_air, afr, m_fuel, t_load, IDLE_RPM)));
 
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
+    let mut speed_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, IDLE_RPM)];
     let mut crank = CrankWheel::new(omega, n_meas);
     let mut cam = CamWheel::new(omega, n_cam);
     for e in &sc.events {
@@ -67,14 +80,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::CrankFault { at_s, fault } => crank = crank.arm_fault(at(at_s), fault),
             Event::CamFault { at_s, fault } => cam = cam.arm_fault(at(at_s), fault),
             Event::Load { at_s, torque } => load_steps.push((at(at_s), torque)),
+            Event::Speed { at_s, rpm } => speed_steps.push((at(at_s), rpm)),
         }
     }
     k.add(Box::new(LoadProfile::new(load_steps, t_load)));
+    k.add(Box::new(LoadProfile::new(speed_steps, speed_req)));
     k.add(Box::new(crank));
     k.add(Box::new(cam));
 
     k.add(Box::new(
-        Ecu::new(n_meas, n_cam, q_cmd, t_arb, dtc, n_model, 6.0)
+        Ecu::new(n_meas, n_cam, speed_req, q_cmd, t_arb, dtc, n_model, 6.0)
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedPlausibility::default()))
             .task(Rate::Ms10, Box::new(LimpMode { torque_max: 40.0 }))
@@ -94,7 +109,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("p_im".into(), p_im),
              ("m_air".into(), m_dot_air),
              ("afr".into(), afr),
-             ("t_load".into(), t_load)],
+             ("t_load".into(), t_load),
+             ("p_em".into(), p_em),
+             ("t_em".into(), t_em),
+             ("n_tc".into(), n_tc)],
         SimDuration::from_millis(10),
     )?));
 

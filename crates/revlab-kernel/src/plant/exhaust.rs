@@ -25,14 +25,15 @@ pub struct ExhaustManifold {
 impl ExhaustManifold {
     pub const STEP: SimDuration = SimDuration::from_millis(1);
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(volume: f64, m_air_in: Port, m_fuel_in: Port, t_im: Port,
                 m_turb_out_in: Port, p_out: Port, t_out: Port,
                 p_init: f64, t_init: f64) -> Self {
         ExhaustManifold {
             p: p_init, t: t_init, volume,
             eta_ind_nom: 0.40,
-            t_wall: 400.0,
-            h_loss: 2.0,
+            t_wall: 450.0,
+            h_loss: 3.0,
             m_air_in, m_fuel_in, t_im, m_turb_out_in, p_out, t_out,
             dt: Self::STEP.as_secs_f64(),
         }
@@ -45,6 +46,7 @@ impl Component for ExhaustManifold {
     }
 
     fn step(&mut self, _t: u16, ctx: &mut Ctx<'_>) {
+        const LHV: f64 = 42.7e6;
         let m_air   = ctx.bus.get(self.m_air_in);
         let m_fuel  = ctx.bus.get(self.m_fuel_in);
         let t_im    = ctx.bus.get(self.t_im);
@@ -52,26 +54,18 @@ impl Component for ExhaustManifold {
         let m_in    = m_air + m_fuel;
 
         // --- port temperature: energy not converted to work heats the gas
-        const LHV: f64 = 42.7e6;
         let t_port = if m_in > 1e-6 {
             t_im + m_fuel * LHV * (1.0 - self.eta_ind_nom) / (m_in * CP_EXH)
-        } else {
-            t_im
-        };
+        } else { t_im };
 
         const N_SUB: u32 = 10;
         let h = self.dt / N_SUB as f64;
         for _ in 0..N_SUB {
-            // enthalpy-weighted mixing, minus wall loss
-            if m_in > 1e-9 {
-                let m_gas = self.p * self.volume / (R_EXH * self.t);
-                let dt_mix = m_in * (t_port - self.t) / m_gas_max(1e-6);
-                let dt_wall = -self.h_loss * (self.t - self.t_wall) / (m_gas.max(1e-6) * CP_EXH);
-                self.t += (dt_mix + dt_wall) * h;
-            }
-            self.t = self.t.clamp(250.0, 1300.0);
-            self.p += R_EXH * self.t / self.volume * (m_in - m_out) * h;
-            self.p = self.p.max(5_000.0);
+            let m_gas = self.p * self.volume / (R_EXH * self.t);
+            let d_mix = m_in * (t_port - self.t) / m_gas;
+            let d_wall = -self.h_loss * (self.t - self.t_wall) / (m_gas * CP_EXH);
+            self.t = (self.t + (d_mix + d_wall) * h).clamp(250.0, 1300.0);
+            self.p = (self.p + R_EXH * self.t / self.volume * (m_in - m_out) * h).max(5_000.0);
         }
 
         ctx.bus.set(self.p_out, self.p);
