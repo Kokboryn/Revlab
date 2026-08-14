@@ -15,7 +15,7 @@ pub struct IdleTask {
 }
 
 impl IdleTask {
-    pub fn new(target_rpm: f64, t_ff: f64) -> Self {
+    pub fn new(t_ff: f64) -> Self {
         IdleTask {
             t_ff,
             kp: 0.09, ki: 0.426,

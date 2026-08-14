@@ -2,6 +2,7 @@ pub mod idle;
 pub mod torque;
 pub mod diag;
 pub mod observer;
+pub mod airpath;
 
 use revlab_core::{SimDuration, SimTime};
 use crate::{Component, Ctx, Port, Trigger};
@@ -33,7 +34,6 @@ impl Rate {
 /// The ECU's RAM image. Shared across all tasks - this is the only thing application code may touch. No sim bus, no plant state
 pub struct EcuState {
     pub now: SimTime,
-    // --- inputs, written by inout processing
     pub n_crank: f64,    // raw
     pub n_cam: f64,      // raw
     pub n_eng: f64,      // selected - what the control path uses
@@ -45,11 +45,14 @@ pub struct EcuState {
     pub freeze_adaptation: bool,
     pub unattributable: bool,
     pub fault_mem: [diag::FaultEntry; diag::N_SENSORS],
-    // --- outputs, read by output drivers
     pub degraded: bool,
     pub q_cmd: f64,     // mg/stroke
     pub t_arb: f64,     // Nm, arbitrated
     pub target_rpm: f64,
+    pub p_im_meas: f64,
+    pub t_im_meas: f64,
+    pub m_air_est: f64,
+    pub q_smoke_limit: f64,
 
 }
 
@@ -64,14 +67,21 @@ pub struct Ecu {
     in_n_crank: Port,
     in_speed_req: Port,
     in_n_cam: Port,
+    in_p_im: Port,
+    in_t_im: Port,
     out_q_cmd: Port,
     out_t_arb: Port,
     out_dtc: Port,
-    out_n_model: Port
+    out_n_model: Port,
+    out_q_lim: Port,
+    out_m_air_est: Port,
 }
 
 impl Ecu {
-    pub fn new(in_n_crank: Port, in_n_cam: Port, in_speed_req: Port, out_q_cmd: Port, out_t_arb: Port, out_dtc: Port, out_n_model: Port, q_init: f64) -> Self {
+    pub fn new(in_n_crank: Port, in_n_cam: Port, in_speed_req: Port,
+               in_p_im: Port, in_t_im: Port, out_q_cmd: Port,
+               out_t_arb: Port, out_dtc: Port, out_n_model: Port,
+               out_q_lim: Port, out_m_air_est: Port, q_init: f64) -> Self {
         Ecu {
             state: EcuState {
                 now: SimTime::ZERO,
@@ -87,12 +97,18 @@ impl Ecu {
                 q_cmd: q_init,
                 n_model: 0.0,
                 target_rpm: 800.0,
+                p_im_meas: 101325.0,
+                t_im_meas: 293.15,
+                m_air_est: 0.0,
+                q_smoke_limit: 0.0,
                 model_valid: false,
                 freeze_adaptation: false,
                 unattributable: false,
             },
             tasks: Vec::new(),
-            in_n_crank, in_n_cam, in_speed_req, out_q_cmd, out_t_arb, out_dtc, out_n_model,
+            in_n_crank, in_n_cam, in_speed_req, in_p_im,
+            in_t_im, out_q_cmd, out_t_arb, out_dtc,
+            out_n_model, out_q_lim, out_m_air_est,
         }
     }
 
@@ -115,10 +131,12 @@ impl Component for Ecu {
         let rate = Rate::from_trig(trig);
 
         // --- input processing
-        self.state.now = ctx.now;
-        self.state.n_crank = ctx.bus.get(self.in_n_crank);
-        self.state.n_cam = ctx.bus.get(self.in_n_cam);
-        self.state.target_rpm = ctx.bus.get(self.in_speed_req);
+        self.state.now          = ctx.now;
+        self.state.n_crank      = ctx.bus.get(self.in_n_crank);
+        self.state.n_cam        = ctx.bus.get(self.in_n_cam);
+        self.state.target_rpm   = ctx.bus.get(self.in_speed_req);
+        self.state.p_im_meas    = ctx.bus.get(self.in_p_im);
+        self.state.t_im_meas    = ctx.bus.get(self.in_t_im);
 
         let n_new = match self.state.speed_source {
             diag::SpeedSource::Crank => self.state.n_crank,
@@ -147,5 +165,7 @@ impl Component for Ecu {
         ctx.bus.set(self.out_t_arb, self.state.t_arb);
         ctx.bus.set(self.out_dtc, worst);
         ctx.bus.set(self.out_n_model, self.state.n_model);
+        ctx.bus.set(self.out_q_lim, self.state.q_smoke_limit);
+        ctx.bus.set(self.out_m_air_est, self.state.m_air_est);
     }
 }

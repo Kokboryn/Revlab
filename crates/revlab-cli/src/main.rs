@@ -17,6 +17,8 @@ use revlab_kernel::plant::{environment::Environment, intake::IntakeManifold};
 use revlab_kernel::plant::load::LoadProfile;
 use revlab_kernel::plant::turbo::Turbo;
 use revlab_kernel::plant::exhaust::ExhaustManifold;
+use revlab_kernel::sensors::map_maf::AnalogSensor;
+use revlab_kernel::ecu::airpath::SmokeLimiter;
 
 const IDLE_RPM: f64 = 800.0;
 
@@ -53,6 +55,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vnt: Port           = k.bus.alloc(1.0);     // vanes open, no control yet
     let t_charge: Port      = k.bus.alloc(293.15);
     let speed_req: Port     = k.bus.alloc(IDLE_RPM);
+    let p_im_s: Port        = k.bus.alloc(101_325.0);
+    let t_im_s: Port        = k.bus.alloc(293.15);
+    let q_lim: Port         = k.bus.alloc(0.0);
+    let m_air_est: Port     = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -63,8 +69,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(IntakeManifold::new(0.0025, t_charge, m_dot_air, m_comp, p_im, t_im, m_dot_maf, 101_325.0, 293.15)));
 
     k.add(Box::new(ExhaustManifold::new(0.0015, m_dot_air, m_fuel, t_im, m_turb, p_em, t_em, 101_325.0, 500.0)));
-
-    k.add(Box::new(IntakeManifold::new(0.0025, t_amb, m_dot_air, m_comp, p_im, t_im, m_dot_maf, 101_325.0, 293.15)));
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
@@ -88,12 +92,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(crank));
     k.add(Box::new(cam));
 
+    k.add(Box::new(AnalogSensor::new(p_im, p_im_s, 0.005, 300.0, 300_000.0, 101_325.0)));
+    k.add(Box::new(AnalogSensor::new(t_im, t_im_s, 0.500, 0.5, 400.0, 293.15)));
+
     k.add(Box::new(
-        Ecu::new(n_meas, n_cam, speed_req, q_cmd, t_arb, dtc, n_model, 6.0)
+        Ecu::new(n_meas, n_cam, speed_req, p_im_s, t_im_s, q_cmd, t_arb, dtc, n_model, q_lim, m_air_est, 6.0)
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedPlausibility::default()))
             .task(Rate::Ms10, Box::new(LimpMode { torque_max: 40.0 }))
-            .task(Rate::Ms10, Box::new(IdleTask::new(IDLE_RPM, 17.3)))
+            .task(Rate::Ms10, Box::new(IdleTask::new(17.3)))
+            .task(Rate::Ms10, Box::new(SmokeLimiter::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(TorqueArbiter))
             .task(Rate::Ms10, Box::new(TorqueToFuel::di_diesel(4.0)))
     ));
@@ -112,7 +120,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("t_load".into(), t_load),
              ("p_em".into(), p_em),
              ("t_em".into(), t_em),
-             ("n_tc".into(), n_tc)],
+             ("n_tc".into(), n_tc),
+             ("q_lim".into(), q_lim),
+             ("m_air_est".into(), m_air_est)],
         SimDuration::from_millis(10),
     )?));
 
