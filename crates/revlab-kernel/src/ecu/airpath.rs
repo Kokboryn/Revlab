@@ -49,11 +49,12 @@ impl Task for SmokeLimiter {
         s.q_smoke_limit = q_limit;
 
         // --- express as a torque ceiling so the arbiter resolves it
-        let t_limit = q_limit * 1e-6 * self.cylinders * self.lhv_cal * self.eta_ind_cal / (4.0 * PI);
+        let t_limit_ind = q_limit * 1e-6 * self.cylinders * self.lhv_cal * self.eta_ind_cal / (4.0 * PI);
+        let t_limit_crank = t_limit_ind - s.t_loss;
 
         s.reqs[Source::Smoke as usize] = TorqueRequest {
             kind: ReqKind::MaxLimit,
-            value: t_limit,
+            value: t_limit_ind,
             active: true,
         };
     }

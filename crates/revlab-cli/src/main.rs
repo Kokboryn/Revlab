@@ -6,7 +6,7 @@ use revlab_kernel::{Kernel, Port};
 use revlab_kernel::plant::engine::{Engine, EngineBuilder};
 use revlab_kernel::plant::{friction::ChenFlynn, fuel::Fuel, geometry::Geometry};
 use revlab_kernel::sensors::{crank_wheel::CrankWheel};
-use revlab_kernel::ecu::{Ecu, Rate, idle::IdleTask};
+use revlab_kernel::ecu::{Ecu, EcuPorts, Rate, idle::IdleTask};
 use revlab_kernel::ecu::torque::{TorqueArbiter, TorqueToFuel};
 use revlab_kernel::telemetry::CsvLogger;
 use revlab_kernel::ecu::diag::{SpeedPlausibility, LimpMode};
@@ -19,6 +19,9 @@ use revlab_kernel::plant::turbo::Turbo;
 use revlab_kernel::plant::exhaust::ExhaustManifold;
 use revlab_kernel::sensors::map_maf::AnalogSensor;
 use revlab_kernel::ecu::airpath::SmokeLimiter;
+use revlab_kernel::ecu::driver::DriverDemand;
+use revlab_kernel::ecu::loss::LossModel;
+use revlab_kernel::ecu::limits::RevLimiter;
 
 const IDLE_RPM: f64 = 800.0;
 
@@ -59,6 +62,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_im_s: Port        = k.bus.alloc(293.15);
     let q_lim: Port         = k.bus.alloc(0.0);
     let m_air_est: Port     = k.bus.alloc(0.0);
+    let t_loss: Port        = k.bus.alloc(0.0);
+    let t_ind_req: Port     = k.bus.alloc(0.0);
+    let pedal: Port         = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -76,6 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
     let mut speed_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, IDLE_RPM)];
+    let mut pedal_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     let mut crank = CrankWheel::new(omega, n_meas);
     let mut cam = CamWheel::new(omega, n_cam);
     for e in &sc.events {
@@ -85,10 +92,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::CamFault { at_s, fault } => cam = cam.arm_fault(at(at_s), fault),
             Event::Load { at_s, torque } => load_steps.push((at(at_s), torque)),
             Event::Speed { at_s, rpm } => speed_steps.push((at(at_s), rpm)),
+            Event::Pedal { at_s, position } => pedal_steps.push((at(at_s), position)),
         }
     }
     k.add(Box::new(LoadProfile::new(load_steps, t_load)));
     k.add(Box::new(LoadProfile::new(speed_steps, speed_req)));
+    k.add(Box::new(LoadProfile::new(pedal_steps, pedal)));
     k.add(Box::new(crank));
     k.add(Box::new(cam));
 
@@ -96,13 +105,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(AnalogSensor::new(t_im, t_im_s, 0.500, 0.5, 400.0, 293.15)));
 
     k.add(Box::new(
-        Ecu::new(n_meas, n_cam, speed_req, p_im_s, t_im_s, q_cmd, t_arb, dtc, n_model, q_lim, m_air_est, 6.0)
+        Ecu::new(EcuPorts {
+            n_crank: n_meas,
+            n_cam,
+            speed_req,
+            p_im: p_im_s,
+            t_im: t_im_s,
+            q_cmd,
+            in_pedal: pedal,
+            t_arb,
+            dtc,
+            n_model,
+            q_lim,
+            m_air_est,
+            t_loss,
+            t_ind_req,
+        }, 6.0)
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedPlausibility::default()))
             .task(Rate::Ms10, Box::new(LimpMode { torque_max: 40.0 }))
-            .task(Rate::Ms10, Box::new(IdleTask::new(17.3)))
+            .task(Rate::Ms10, Box::new(DriverDemand::di_diesel_1_6()))
+            .task(Rate::Ms10, Box::new(IdleTask::new(0.0)))
             .task(Rate::Ms10, Box::new(SmokeLimiter::di_diesel_1_6()))
+            .task(Rate::Ms10, Box::new(RevLimiter::ea288()))
             .task(Rate::Ms10, Box::new(TorqueArbiter))
+            .task(Rate::Ms10, Box::new(LossModel::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(TorqueToFuel::di_diesel(4.0)))
     ));
     k.add(Box::new(CsvLogger::new(
@@ -122,7 +149,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("t_em".into(), t_em),
              ("n_tc".into(), n_tc),
              ("q_lim".into(), q_lim),
-             ("m_air_est".into(), m_air_est)],
+             ("m_air_est".into(), m_air_est),
+             ("t_loss".into(), t_loss),
+             ("t_ind_req".into(), t_ind_req),
+             ("pedal".into(), pedal)],
         SimDuration::from_millis(10),
     )?));
 

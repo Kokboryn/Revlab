@@ -3,8 +3,8 @@ use super::{EcuState, Task};
 
 /// Fixed slot per producer - no allocation, and the arbiter's input set is known at compile time, as on real firmware
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Source { Idle = 0, Driver = 1, Smoke = 2, Protect = 3 }
-pub const N_SOURCES: usize = 4;
+pub enum Source { Idle = 0, Driver = 1, Smoke = 2, Protect = 3, RevLimit = 4 }
+pub const N_SOURCES: usize = 5;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ReqKind {
@@ -75,7 +75,7 @@ impl Task for TorqueToFuel {
     fn run(&mut self, s: &mut EcuState) {
         // q = T · 4π / (n_cyl · LHV · η). in mg/stroke
         let denom = self.cylinders * self.lhv_cal * self.eta_cal;
-        let q = s.t_arb * 4.0 * PI / denom * 1e6;
+        let q = s.t_ind_req * 4.0 * PI / denom * 1e6;
         s.q_cmd = q.clamp(0.0, self.q_max);
     }
 }

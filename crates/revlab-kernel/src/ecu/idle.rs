@@ -21,7 +21,7 @@ impl IdleTask {
             kp: 0.09, ki: 0.426,
             degraded_scale: 0.5,
             integ: 0.0,
-            t_min: 0.0, t_max: 250.0,
+            t_min: -60.0, t_max: 250.0,
             last_update: None,
             last_seq: 0,
         }

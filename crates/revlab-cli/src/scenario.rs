@@ -6,6 +6,7 @@ pub enum Event {
     CamFault   { at_s: f64, fault: Fault },
     Load       { at_s: f64, torque: f64 },
     Speed      { at_s: f64, rpm: f64 },
+    Pedal      { at_s: f64, position: f64 },    // 0.0 to 1.0
 }
 
 pub struct Scenario {
@@ -23,6 +24,8 @@ pub const NAMES: &[(&str, &str)] = &[
     ("cam_drift", "CAM drifts instead - does the monitor lame the right sensor?"),
     ("load_step", "60 Nm load applied at t=5s - spools the turbo"),
     ("spool", "2500 rpm + 8000 Nm at t=5s - turbo spools"),
+    ("pedal_ramp", "pedal to 40% at t=5s, released at t=12s"),
+    ("pedal_full", "pedal to 100% at t=5s, no load- watch the rev limit"),
 ];
 
 impl Scenario {
@@ -35,6 +38,8 @@ impl Scenario {
             "cam_drift"     => (20, vec![Event::CamFault { at_s: 10.0, fault: Fault::Drift {per_sec: 20.0 } }]),
             "load_step"     => (20, vec![Event::Load { at_s: 5.0, torque: 60.0 }]),
             "spool"         => (20, vec![Event::Speed { at_s: 5.0, rpm: 2500.0 }, Event::Load { at_s: 5.0, torque: 80.0 }]),
+            "pedal_ramp"    => (20, vec![Event::Pedal { at_s: 5.0, position: 0.40 }, Event::Pedal { at_s: 12.0, position: 0.0 }]),
+            "pedal_full"    => (20, vec![Event::Pedal { at_s: 5.0, position: 1.0 }]),
             _ => return None,
         };
         let about = NAMES.iter().find(|(k,_)| *k==n).map(|(_, v)| *v)?;

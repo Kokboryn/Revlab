@@ -69,14 +69,16 @@ def main():
         panels.append('fuel')
     if 'p_im' in c:
         panels.append('air')
+    if 'pedal' in c:
+        panels.append('pedal')
     if not panels:
         sys.exit('nothing plottable: need omega, t_arb or q_cmd')
 
-    heights = {'speed': 2.4, 'torque': 1.0, 'fuel': 1.0, 'air': 1.2}
+    heights = {'speed': 2.4, 'torque': 1.0, 'fuel': 1.0, 'air': 1.2, 'pedal': 0.7}
     fig, axes = plt.subplots(
         len(panels), 1, sharex=True,
-        figsize=(10, 1.7 * sum(heights[p] for p in panels)),
-        gridspec_kw={'height_ratios': [heights[p] for p in panels]})
+        figsize=(10, 1.7 * sum(heights.get(p, 1.0) for p in panels)),
+        gridspec_kw={'height_ratios': [heights.get(p, 1.0) for p in panels]})
     if len(panels) == 1:
         axes = [axes]
     ax = dict(zip(panels, axes))
@@ -131,6 +133,13 @@ def main():
             q.set_ylabel('AFR', color='#8c8c1f')
             handles.append(l2)
         p.legend(handles=handles, loc='best', fontsize=8.5, framealpha=0.95)
+
+    # --- pedal
+    if 'pedal' in ax:
+        p = ax['pedal']
+        p.fill_between(t, [v*100 for v in c['pedal']], color='#555', alpha=0.35)
+        p.set_ylabel('pedal\n[%]')
+        p.set_ylim(0, 105)
 
     for axis in axes:
         axis.grid(alpha=0.22)

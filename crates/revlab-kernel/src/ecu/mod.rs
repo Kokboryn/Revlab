@@ -3,6 +3,9 @@ pub mod torque;
 pub mod diag;
 pub mod observer;
 pub mod airpath;
+pub mod loss;
+pub mod driver;
+pub mod limits;
 
 use revlab_core::{SimDuration, SimTime};
 use crate::{Component, Ctx, Port, Trigger};
@@ -53,7 +56,9 @@ pub struct EcuState {
     pub t_im_meas: f64,
     pub m_air_est: f64,
     pub q_smoke_limit: f64,
-
+    pub t_loss: f64,
+    pub t_ind_req: f64,
+    pub pedal: f64,
 }
 
 pub trait Task: Send {
@@ -61,27 +66,36 @@ pub trait Task: Send {
     fn run(&mut self, s: &mut EcuState);
 }
 
+/// Every port the ECU touches, named. Construction is by field name, so the ordering mistakes that
+/// plague a 16-argument constructor become impossible
+#[derive(Copy, Clone)]
+pub struct EcuPorts {
+    // inputs
+    pub n_crank: Port,
+    pub n_cam: Port,
+    pub speed_req: Port,
+    pub p_im: Port,
+    pub t_im: Port,
+    pub in_pedal: Port,
+    // outputs
+    pub q_cmd: Port,
+    pub t_arb: Port,
+    pub dtc: Port,
+    pub n_model: Port,
+    pub q_lim: Port,
+    pub m_air_est: Port,
+    pub t_loss: Port,
+    pub t_ind_req: Port,
+}
+
 pub struct Ecu {
     state: EcuState,
     tasks: Vec<(Rate, Box<dyn Task>)>,
-    in_n_crank: Port,
-    in_speed_req: Port,
-    in_n_cam: Port,
-    in_p_im: Port,
-    in_t_im: Port,
-    out_q_cmd: Port,
-    out_t_arb: Port,
-    out_dtc: Port,
-    out_n_model: Port,
-    out_q_lim: Port,
-    out_m_air_est: Port,
+    p: EcuPorts,
 }
 
 impl Ecu {
-    pub fn new(in_n_crank: Port, in_n_cam: Port, in_speed_req: Port,
-               in_p_im: Port, in_t_im: Port, out_q_cmd: Port,
-               out_t_arb: Port, out_dtc: Port, out_n_model: Port,
-               out_q_lim: Port, out_m_air_est: Port, q_init: f64) -> Self {
+    pub fn new(p: EcuPorts, q_init: f64) -> Self {
         Ecu {
             state: EcuState {
                 now: SimTime::ZERO,
@@ -104,11 +118,12 @@ impl Ecu {
                 model_valid: false,
                 freeze_adaptation: false,
                 unattributable: false,
+                t_loss: 0.0,
+                t_ind_req: 0.0,
+                pedal: 0.0,
             },
             tasks: Vec::new(),
-            in_n_crank, in_n_cam, in_speed_req, in_p_im,
-            in_t_im, out_q_cmd, out_t_arb, out_dtc,
-            out_n_model, out_q_lim, out_m_air_est,
+            p,
         }
     }
 
@@ -132,11 +147,12 @@ impl Component for Ecu {
 
         // --- input processing
         self.state.now          = ctx.now;
-        self.state.n_crank      = ctx.bus.get(self.in_n_crank);
-        self.state.n_cam        = ctx.bus.get(self.in_n_cam);
-        self.state.target_rpm   = ctx.bus.get(self.in_speed_req);
-        self.state.p_im_meas    = ctx.bus.get(self.in_p_im);
-        self.state.t_im_meas    = ctx.bus.get(self.in_t_im);
+        self.state.n_crank      = ctx.bus.get(self.p.n_crank);
+        self.state.n_cam        = ctx.bus.get(self.p.n_cam);
+        self.state.target_rpm   = ctx.bus.get(self.p.speed_req);
+        self.state.p_im_meas    = ctx.bus.get(self.p.p_im);
+        self.state.t_im_meas    = ctx.bus.get(self.p.t_im);
+        self.state.pedal        = ctx.bus.get(self.p.in_pedal);
 
         let n_new = match self.state.speed_source {
             diag::SpeedSource::Crank => self.state.n_crank,
@@ -161,11 +177,13 @@ impl Component for Ecu {
                 diag::DtcState::Confirmed => 2.0,
             })
             .fold(0.0_f64, f64::max);
-        ctx.bus.set(self.out_q_cmd, self.state.q_cmd);
-        ctx.bus.set(self.out_t_arb, self.state.t_arb);
-        ctx.bus.set(self.out_dtc, worst);
-        ctx.bus.set(self.out_n_model, self.state.n_model);
-        ctx.bus.set(self.out_q_lim, self.state.q_smoke_limit);
-        ctx.bus.set(self.out_m_air_est, self.state.m_air_est);
+        ctx.bus.set(self.p.q_cmd, self.state.q_cmd);
+        ctx.bus.set(self.p.t_arb, self.state.t_arb);
+        ctx.bus.set(self.p.dtc, worst);
+        ctx.bus.set(self.p.n_model, self.state.n_model);
+        ctx.bus.set(self.p.q_lim, self.state.q_smoke_limit);
+        ctx.bus.set(self.p.m_air_est, self.state.m_air_est);
+        ctx.bus.set(self.p.t_loss, self.state.t_loss);
+        ctx.bus.set(self.p.t_ind_req, self.state.t_ind_req);
     }
 }
