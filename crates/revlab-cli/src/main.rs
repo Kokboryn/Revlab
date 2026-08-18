@@ -19,7 +19,7 @@ use revlab_kernel::plant::load::LoadProfile;
 use revlab_kernel::plant::turbo::Turbo;
 use revlab_kernel::plant::exhaust::ExhaustManifold;
 use revlab_kernel::sensors::map_maf::AnalogSensor;
-use revlab_kernel::ecu::airpath::SmokeLimiter;
+use revlab_kernel::ecu::airpath::{AirEstimator, SmokeLimiter};
 use revlab_kernel::ecu::driver::DriverDemand;
 use revlab_kernel::ecu::loss::LossModel;
 use revlab_kernel::ecu::limits::RevLimiter;
@@ -74,16 +74,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pedal: Port         = k.bus.alloc(0.0);
     let crank_valid: Port   = k.bus.alloc(1.0);
     let cam_valid: Port     = k.bus.alloc(1.0);
+    let m_maf_s: Port       = k.bus.alloc(0.0);
+    let n_tc_s: Port        = k.bus.alloc(0.0);
+    let t_em_s: Port        = k.bus.alloc(500.0);
+    let p_amb_s: Port        = k.bus.alloc(101_325.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
     eprintln!("friction at idle {:.1} Nm", ChenFlynn::DI_DIESEL.torque(&geom, 800.0, 140e5));
+
+    // Thermocouple in the exhaust stream: ~2 s time constant. That lag is real and is why EGT protection
+    // acts on a model, not the sensor.
+    k.add(Box::new(AnalogSensor::new(t_em, t_em_s, 2.000, 3.0, 1300.0, 500.0)));
+
+    k.add(Box::new(AnalogSensor::new(n_tc, n_tc_s, 0.10, 200.0, 300_000.0, 0.0)));
+    k.add(Box::new(AnalogSensor::new(p_amb, p_amb_s, 0.200, 100.0, 120_000.0, 101_325.0)));
 
     k.add(Box::new(Environment::standard(p_amb, t_amb)));
     k.add(Box::new(Turbo::vnt_small_diesel(p_amb, t_amb, p_im, p_em, t_em, vnt, m_comp, t_charge,m_turb, n_tc)));
     k.add(Box::new(IntakeManifold::new(0.0025, t_charge, m_dot_air, m_comp, p_im, t_im, m_dot_maf, 101_325.0, 293.15)));
 
     k.add(Box::new(ExhaustManifold::new(0.0015, m_dot_air, m_fuel, t_im, m_turb, p_em, t_em, 101_325.0, 500.0)));
+
+    // Hotwire MAF: fast element, but noisy and prone to error during fast flow changes - which is why
+    // real ECUs blend it with speed-density rather than trusting it alone
+    k.add(Box::new(AnalogSensor::new(m_dot_maf, m_maf_s, 0.020, 0.4e-3, 0.5, 0.0)));
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
@@ -133,6 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             speed_req,
             p_im: p_im_s,
             t_im: t_im_s,
+            m_maf: m_maf_s,
             q_cmd,
             in_pedal: pedal,
             t_arb,
@@ -150,6 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .task(Rate::Ms10, Box::new(LimpMode { torque_max: 40.0 }))
             .task(Rate::Ms10, Box::new(DriverDemand::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(IdleTask::new(0.0)))
+            .task(Rate::Ms10, Box::new(AirEstimator::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SmokeLimiter::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(RevLimiter::ea288()))
             .task(Rate::Ms10, Box::new(TorqueArbiter))
@@ -176,7 +193,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("m_air_est".into(), m_air_est),
              ("t_loss".into(), t_loss),
              ("t_ind_req".into(), t_ind_req),
-             ("pedal".into(), pedal)],
+             ("pedal".into(), pedal),
+             ("m_maf_s".into(), m_maf_s)],
         SimDuration::from_millis(10),
     )?));
 

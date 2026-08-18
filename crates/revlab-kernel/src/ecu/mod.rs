@@ -61,6 +61,8 @@ pub struct EcuState {
     pub pedal: f64,
     pub crank_valid: bool,
     pub cam_valid: bool,
+    pub m_maf_meas: f64,
+    m_air_est_sd: f64,
 }
 
 pub trait Task: Send {
@@ -81,6 +83,7 @@ pub struct EcuPorts {
     pub in_pedal: Port,
     pub crank_valid: Port,
     pub cam_valid: Port,
+    pub m_maf: Port,
     // outputs
     pub q_cmd: Port,
     pub t_arb: Port,
@@ -127,6 +130,8 @@ impl Ecu {
                 pedal: 0.0,
                 crank_valid: true,
                 cam_valid: true,
+                m_maf_meas: 0.0,
+                m_air_est_sd: 0.5,
             },
             tasks: Vec::new(),
             p,
@@ -161,6 +166,7 @@ impl Component for Ecu {
         self.state.pedal        = ctx.bus.get(self.p.in_pedal);
         self.state.crank_valid  = ctx.bus.get(self.p.crank_valid) > 0.5;
         self.state.cam_valid    = ctx.bus.get(self.p.cam_valid) > 0.5;
+        self.state.m_maf_meas   = ctx.bus.get(self.p.m_maf);
 
         let n_new = match self.state.speed_source {
             diag::SpeedSource::Crank if self.state.crank_valid => Some(self.state.n_crank),

@@ -27,7 +27,7 @@ impl Component for CsvLogger {
     fn step(&mut self, _t: u16, ctx: &mut Ctx<'_>) {
         let _ = write!(self.w, "{:.6}", ctx.now.as_secs_f64());
         for (_, p) in &self.ports {
-            let _ = write!(self.w, ",{:.4}", ctx.bus.get(*p));
+            let _ = write!(self.w, ",{:.6e}", ctx.bus.get(*p));
         }
         let _ = writeln!(self.w);
     }
