@@ -1,4 +1,5 @@
 mod scenario;
+mod keyboard;
 
 use std::f64::consts::PI;
 use revlab_core::{SimDuration, SimTime};
@@ -23,6 +24,11 @@ use revlab_kernel::ecu::driver::DriverDemand;
 use revlab_kernel::ecu::loss::LossModel;
 use revlab_kernel::ecu::limits::RevLimiter;
 use revlab_kernel::pacer::Pacer;
+
+struct RawGuard;
+impl Drop for RawGuard {
+    fn drop(&mut self) { let _ = keyboard::Keyboard::leave_raw(); }
+}
 
 const IDLE_RPM: f64 = 800.0;
 
@@ -97,12 +103,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if let Some(sp) = args.speed {
-        k.add(Box::new(Pacer::new(sp)));
+    let quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _raw = if args.live {
+        keyboard::Keyboard::enter_raw()?;
+        Some(RawGuard)
+    } else { None };
+
+    if args.live {
+        k.add(Box::new(Pacer::new(1.0)));
+        k.add(Box::new(keyboard::Keyboard::new(pedal, t_load, quit.clone())));
+    } else {
+        if let Some(sp) = args.speed { k.add(Box::new(Pacer::new(sp))); }
+        k.add(Box::new(LoadProfile::new(load_steps, t_load)));
+        k.add(Box::new(LoadProfile::new(pedal_steps, pedal)));
     }
-    k.add(Box::new(LoadProfile::new(load_steps, t_load)));
     k.add(Box::new(LoadProfile::new(speed_steps, speed_req)));
-    k.add(Box::new(LoadProfile::new(pedal_steps, pedal)));
     k.add(Box::new(crank));
     k.add(Box::new(cam));
 
@@ -162,20 +177,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?));
 
     let end = SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000);
-    let chunk = SimDuration::from_millis(1000);
+    let chunk = SimDuration::from_millis(if args.live { 100 } else { 1000 });
     let wall = std::time::Instant::now();
     let mut t = SimTime::ZERO;
-    while t < end {
-        t = std::cmp::min(t + chunk, end);
+
+    if args.live {
+        eprintln!(" up/down = pedal     left/right = load   space = lift    q = quit\r")
+    }
+
+    while args.live || t < end {
+        t = t + chunk;
+        if !args.live { t = std::cmp::min(t + chunk, end); }
         k.run_until(t);
-        eprint!("\r {:.0}/{} s simulated ({:.0}x real time)     ",
-            t.as_secs_f64(), sc.duration_s,
-            t.as_secs_f64() / wall.elapsed().as_secs_f64().max(1e-9));
+
+        if args.live {
+            let rpm = k.bus.get(omega) * 60.0 / (2.0 * PI);
+            let boost = (k.bus.get(p_im) - 101_325.0) / 1e5;
+            eprint!("\r {:5.0} rpm | {:+5.2} bar | AFR {:5.1} | EGT {:4.0} c | pedal {:3.0}% | load {:3.0} Nm ",
+            rpm, boost, k.bus.get(afr).min(999.0), k.bus.get(t_em) - 273.15, k.bus.get(pedal) * 100.0, k.bus.get(t_load));
+            if quit.load(std::sync::atomic::Ordering::Relaxed) { break; }
+        } else {
+            eprint!("\r {:.0}/{} s simulated ({:.0}x real time)     ",
+                    t.as_secs_f64(), sc.duration_s,
+                    t.as_secs_f64() / wall.elapsed().as_secs_f64().max(1e-9));
+        }
     }
     eprintln!();
 
     drop(k);
     eprintln!("done, {} s simulated -> {}", sc.duration_s, args.out);
+
 
     if args.plot {
         let title = format!("Revlab - {} (seed {})", sc.name, args.seed);

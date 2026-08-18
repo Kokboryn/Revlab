@@ -5,7 +5,6 @@ use super::{EcuState, Task};
 ///
 /// At closed pedal the target is NEGATIVE - overrun. That is what lets the idle governor's MinLimit
 /// act as a floor rather than the only request, and it is why a real engine slows when you lift off
-
 pub struct DriverDemand {
     pub t_max: f64,         // Nm at full pedal
     pub t_overrun: f64,     // Nm at closed pedal (negative)

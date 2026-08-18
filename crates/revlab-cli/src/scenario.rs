@@ -53,10 +53,11 @@ pub struct Args {
     pub out: String,
     pub plot: bool,
     pub speed: Option<f64>,     // None = as fast as possible
+    pub live: bool,
 }
 
 pub fn parse_args() -> Result<Args, String> {
-    let mut a = Args { scenario: "crank_drift".into(), seed: 0xC0FFEE, out: "run.csv".into(), plot: false, speed: None };
+    let mut a = Args { scenario: "crank_drift".into(), seed: 0xC0FFEE, out: "run.csv".into(), plot: false, speed: None, live: false };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         match k.as_str() {
@@ -70,6 +71,7 @@ pub fn parse_args() -> Result<Args, String> {
             "--plot" => a.plot = true,
             "--realtime" => a.speed = Some(1.0),
             "--speed" => a.speed = Some(it.next().ok_or("--speed needs a value")?.parse().map_err(|_| "--speed must be a number")?,),
+            "--live" => a.live = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
