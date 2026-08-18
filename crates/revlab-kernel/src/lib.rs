@@ -8,6 +8,7 @@ pub mod sensors;
 pub mod ecu;
 
 pub mod telemetry;
+pub mod pacer;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct ComponentId(pub u32);

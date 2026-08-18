@@ -54,7 +54,7 @@ impl Task for SmokeLimiter {
 
         s.reqs[Source::Smoke as usize] = TorqueRequest {
             kind: ReqKind::MaxLimit,
-            value: t_limit_ind,
+            value: t_limit_crank,
             active: true,
         };
     }

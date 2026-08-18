@@ -22,6 +22,7 @@ use revlab_kernel::ecu::airpath::SmokeLimiter;
 use revlab_kernel::ecu::driver::DriverDemand;
 use revlab_kernel::ecu::loss::LossModel;
 use revlab_kernel::ecu::limits::RevLimiter;
+use revlab_kernel::pacer::Pacer;
 
 const IDLE_RPM: f64 = 800.0;
 
@@ -95,6 +96,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::Pedal { at_s, position } => pedal_steps.push((at(at_s), position)),
         }
     }
+
+    if let Some(sp) = args.speed {
+        k.add(Box::new(Pacer::new(sp)));
+    }
     k.add(Box::new(LoadProfile::new(load_steps, t_load)));
     k.add(Box::new(LoadProfile::new(speed_steps, speed_req)));
     k.add(Box::new(LoadProfile::new(pedal_steps, pedal)));
@@ -156,7 +161,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SimDuration::from_millis(10),
     )?));
 
-    k.run_until(SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000));
+    let end = SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000);
+    let chunk = SimDuration::from_millis(1000);
+    let wall = std::time::Instant::now();
+    let mut t = SimTime::ZERO;
+    while t < end {
+        t = std::cmp::min(t + chunk, end);
+        k.run_until(t);
+        eprint!("\r {:.0}/{} s simulated ({:.0}x real time)     ",
+            t.as_secs_f64(), sc.duration_s,
+            t.as_secs_f64() / wall.elapsed().as_secs_f64().max(1e-9));
+    }
+    eprintln!();
+
     drop(k);
     eprintln!("done, {} s simulated -> {}", sc.duration_s, args.out);
 
