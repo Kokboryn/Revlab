@@ -59,6 +59,8 @@ pub struct EcuState {
     pub t_loss: f64,
     pub t_ind_req: f64,
     pub pedal: f64,
+    pub crank_valid: bool,
+    pub cam_valid: bool,
 }
 
 pub trait Task: Send {
@@ -77,6 +79,8 @@ pub struct EcuPorts {
     pub p_im: Port,
     pub t_im: Port,
     pub in_pedal: Port,
+    pub crank_valid: Port,
+    pub cam_valid: Port,
     // outputs
     pub q_cmd: Port,
     pub t_arb: Port,
@@ -121,6 +125,8 @@ impl Ecu {
                 t_loss: 0.0,
                 t_ind_req: 0.0,
                 pedal: 0.0,
+                crank_valid: true,
+                cam_valid: true,
             },
             tasks: Vec::new(),
             p,
@@ -153,15 +159,20 @@ impl Component for Ecu {
         self.state.p_im_meas    = ctx.bus.get(self.p.p_im);
         self.state.t_im_meas    = ctx.bus.get(self.p.t_im);
         self.state.pedal        = ctx.bus.get(self.p.in_pedal);
+        self.state.crank_valid  = ctx.bus.get(self.p.crank_valid) > 0.5;
+        self.state.cam_valid    = ctx.bus.get(self.p.cam_valid) > 0.5;
 
         let n_new = match self.state.speed_source {
-            diag::SpeedSource::Crank => self.state.n_crank,
-            diag::SpeedSource::Cam   => self.state.n_cam,
+            diag::SpeedSource::Crank if self.state.crank_valid => Some(self.state.n_crank),
+            diag::SpeedSource::Cam   if self.state.cam_valid => Some(self.state.n_cam),
+            _ => None
         };
-        // Real firmware gets a "new capture" flag from the timer unit. A bit-identical value means the port was not rewritten.
-        if n_new != self.state.n_eng {
-            self.state.n_eng = n_new;
-            self.state.n_eng_seq += 1;
+        if let Some(n) = n_new {
+            // Real firmware gets a "new capture" flag from the timer unit. A bit-identical value means the port was not rewritten.
+            if n != self.state.n_eng {
+                self.state.n_eng = n;
+                self.state.n_eng_seq += 1;
+            }
         }
 
         // --- application

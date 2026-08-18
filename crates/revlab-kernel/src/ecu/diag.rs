@@ -87,6 +87,12 @@ impl Task for SpeedPlausibility {
     fn name(&self) -> &'static str { "SpeedPlausibility" }
 
     fn run(&mut self, s: &mut EcuState) {
+        // Cannot compare signals that are not there. A stopped engine or an open circuit is not a correlation fault
+        if !s.crank_valid || !s.cam_valid {
+            s.freeze_adaptation = true;
+            return;
+        }
+        
         // --- rate of change, lightly filtered
         if let Some(t0) = self.last_t {
             let dt = (s.now - t0).as_secs_f64();

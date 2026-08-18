@@ -15,16 +15,17 @@ pub struct CamWheel {
     noise_rpm: f64,
     omega_in: Port,     // true Crank omega
     n_cam_out: Port,    // crank equivalent rpm
+    valid_out: Port,
 }
 
 impl CamWheel {
-    pub fn new(omega_in: Port, n_cam_out:Port) -> Self {
+    pub fn new(omega_in: Port, n_cam_out:Port, valid_out: Port,) -> Self {
         CamWheel {
             last_edge: SimTime::ZERO,
             fault: Fault::None, fault_since: None,
             armed: None,
             noise_rpm: 3.0,
-            omega_in, n_cam_out,
+            omega_in, n_cam_out, valid_out,
         }
     }
 
@@ -46,9 +47,19 @@ impl Component for CamWheel {
             }
         }
 
+        // --- reschedule / stall check FIRST, so a stopped engine never reaches the measurement path
+        // and invents a period from the 50 ms poll interval
+
+        let omega = ctx.bus.get(self.omega_in);
+        if omega <= 1.0 {
+            ctx.bus.set(self.valid_out, 0.0);
+            self.last_edge = ctx.now;       // no stale gap after a restart
+            ctx.schedule_in(SimDuration::from_millis(50), 0);
+            return;
+        }
+
         let dt_ns = (ctx.now - self.last_edge).as_nanos();
         self.last_edge = ctx.now;
-
         if dt_ns > 0 {
             let dt = dt_ns as f64 * 1e-9;
             // cam omega -> crank omega is x2 on a four stroke
@@ -58,17 +69,18 @@ impl Component for CamWheel {
 
             let ta = self.fault_since
                 .map(|t0| (ctx.now - t0).as_secs_f64()).unwrap_or(0.0);
-            if let Some(v) = self.fault.apply(n, ta) {
-                ctx.bus.set(self.n_cam_out, v);
+            match self.fault.apply(n, ta) {
+                Some(v) => {
+                    ctx.bus.set(self.n_cam_out, v);
+                    ctx.bus.set(self.valid_out, 0.0);
+                }
+                // Open circuit: no signal at all. Indistinguishable from a stopped engine at the ECU,
+                // which is correct
+                None => ctx.bus.set(self.valid_out, 0.0),
             }
         }
 
-        let omega = ctx.bus.get(self.omega_in);
-        if omega > 1.0 {
-            let ns = (LOBE_RAD / (omega / 2.0) * 1e9) as u64;
-            ctx.schedule_in(SimDuration::from_nanos(ns.max(1)), 0);
-        } else {
-            ctx.schedule_in(SimDuration::from_millis(50), 0);
-        }
+        let ns = (LOBE_RAD / (omega / 2.0) * 1e9) as u64;
+        ctx.schedule_in(SimDuration::from_nanos(ns.max(1)), 0);
     }
 }

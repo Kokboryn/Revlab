@@ -19,10 +19,11 @@ pub struct CrankWheel {
     noise_rpm: f64,
     omega_in: Port,
     n_meas_out: Port,
+    valid_out: Port,
 }
 
 impl CrankWheel {
-    pub fn new(omega_in: Port, n_meas_out: Port) -> Self {
+    pub fn new(omega_in: Port, n_meas_out: Port, valid_out: Port,) -> Self {
         CrankWheel {
             tooth: 0,
             last_edge: SimTime::ZERO,
@@ -32,7 +33,7 @@ impl CrankWheel {
             armed: None,
             timer_tick_ns: 50,  // 20 MHz capture timer
             noise_rpm: 1.5,
-            omega_in, n_meas_out,
+            omega_in, n_meas_out, valid_out,
         }
     }
 
@@ -69,6 +70,14 @@ impl Component for CrankWheel {
             }
         }
 
+        let omega = ctx.bus.get(self.omega_in);
+        if omega <= 1.0 {
+            ctx.bus.set(self.valid_out, 0.0);
+            self.last_edge = ctx.now;
+            ctx.schedule_in(SimDuration::from_millis(50), 0);
+            return;
+        }
+
         // --- measure: period since previous edge, quantized by the timer
         let raw_ns = (ctx.now - self.last_edge).as_nanos();
         let q_ns = (raw_ns / self.timer_tick_ns) * self.timer_tick_ns;
@@ -80,25 +89,20 @@ impl Component for CrankWheel {
             n_rpm += ctx.rng.normal() * self.noise_rpm;
 
             let t_active = self.fault_since
-                .map(|t0| (ctx.now - t0).as_secs_f64())
-                .unwrap_or(0.0);
+                .map(|t0| (ctx.now - t0).as_secs_f64()).unwrap_or(0.0);
             match self.fault.apply(n_rpm, t_active) {
-                Some(v) => ctx.bus.set(self.n_meas_out, v),
-                None => {}      // open circuit: ECU keeps the last value
+                Some(v) => {
+                    ctx.bus.set(self.n_meas_out, v);
+                    ctx.bus.set(self.valid_out, 1.0);
+                }
+                None => ctx.bus.set(self.valid_out, 0.0),      // open circuit
             }
         }
 
-        // --- reschedule from *true* speed
-        let omega = ctx.bus.get(self.omega_in);
         let (next_tooth, step) = self.next_step();
-        if omega > 1.0 {
-            self.tooth = next_tooth;
-            self.step_rad = step;
-            let ns = (step / omega * 1e9) as u64;
-            ctx.schedule_in(SimDuration::from_nanos(ns.max(1)), 0);
-        } else {
-            // Stalled: poll slowly so the wheel can make up on restart
-            ctx.schedule_in(SimDuration::from_millis(50), 0);
-        }
+        self.tooth = next_tooth;
+        self.step_rad = step;
+        let ns = (step / omega * 1e9) as u64;
+        ctx.schedule_in(SimDuration::from_nanos(ns.max(1)), 0);
     }
 }

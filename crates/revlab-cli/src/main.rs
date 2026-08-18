@@ -72,6 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_loss: Port        = k.bus.alloc(0.0);
     let t_ind_req: Port     = k.bus.alloc(0.0);
     let pedal: Port         = k.bus.alloc(0.0);
+    let crank_valid: Port   = k.bus.alloc(1.0);
+    let cam_valid: Port     = k.bus.alloc(1.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -90,8 +92,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
     let mut speed_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, IDLE_RPM)];
     let mut pedal_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
-    let mut crank = CrankWheel::new(omega, n_meas);
-    let mut cam = CamWheel::new(omega, n_cam);
+    let mut crank = CrankWheel::new(omega, n_meas, crank_valid,);
+    let mut cam = CamWheel::new(omega, n_cam, cam_valid,);
     for e in &sc.events {
         let at = |s: f64| SimTime::ZERO + SimDuration::from_millis((s * 1000.0) as u64);
         match *e {
@@ -140,6 +142,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             m_air_est,
             t_loss,
             t_ind_req,
+            cam_valid,
+            crank_valid,
         }, 6.0)
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedPlausibility::default()))
@@ -186,8 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     while args.live || t < end {
-        t = t + chunk;
-        if !args.live { t = std::cmp::min(t + chunk, end); }
+        t = if args.live { t + chunk } else { std::cmp::min(t + chunk, end) };
         k.run_until(t);
 
         if args.live {
