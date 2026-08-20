@@ -29,10 +29,10 @@ impl SpeedObserver {
             cylinders: 4.0,
             fric_a: 14.0,
             fric_b: 0.021,      // 14.0 + 0.021·83.8 = 15.76 Nm at idle, matching eta_cal's torque at 6.1 mg
-            // PI observer. Speed responds at 95.5 rpm/s per Nm with j_cal, so wn = sqrt(95.5 * bias_gain) = 1.38 rad/s
-            // and zeta = 0.72.
-            // Proportional alone cannot reject a constant load: at the old 0.5 it left 191 rpm of
-            // error per Nm
+            // PI observer. Speed responds at 95.5 rpm/s per Nm with j_cal, so wn = sqrt(95.5 * bias_gain) = 1.95 rad/s
+            // and zeta = 0.26.
+            // Underdamped by design for now: detection latency on crank_drift was the binding constraint,
+            // not overshoot.
             correct_gain: 1.0,
             bias_gain: 0.04,
             bias_max: 300.0,

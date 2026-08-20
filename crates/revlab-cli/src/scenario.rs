@@ -23,7 +23,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("crank_open", "crank signal lost at t=10s"),
     ("cam_drift", "CAM drifts instead - does the monitor lame the right sensor?"),
     ("load_step", "60 Nm load applied at t=5s - spools the turbo"),
-    ("spool", "2500 rpm + 8000 Nm at t=5s - turbo spools"),
+    ("spool", "2500 rpm + 80 Nm at t=5s - turbo spools"),
     ("pedal_ramp", "pedal to 40% at t=5s, released at t=12s"),
     ("pedal_full", "pedal to 100% at t=5s, no load- watch the rev limit"),
 ];
