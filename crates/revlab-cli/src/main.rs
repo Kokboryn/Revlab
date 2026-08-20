@@ -84,6 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let visc_mult: Port     = k.bus.alloc(3.2);
     let t_cool_s: Port      = k.bus.alloc(293.15);
     let freeze: Port        = k.bus.alloc(0.0);
+    let t_bias: Port        = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -171,6 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             crank_valid,
             t_ect_c: t_cool_s,
             freeze,
+            t_bias,
         }, 6.0)
             .task(Rate::Ms10, Box::new(WarmupComp::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
@@ -213,7 +215,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("visc_mult".into(), visc_mult),
              ("freeze".into(), freeze),
              ("crank_valid".into(), crank_valid),
-             ("cam_valid".into(), cam_valid),],
+             ("cam_valid".into(), cam_valid),
+             ("t_bias".into(), t_bias),],
         SimDuration::from_millis(10),
     )?));
 

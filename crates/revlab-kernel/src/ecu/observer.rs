@@ -15,6 +15,8 @@ pub struct SpeedObserver {
     pub fric_a: f64,        // Nm
     pub fric_b: f64,        // Nm·s/rad
     pub correct_gain: f64,  // 1/s, pull toward the trusted sensor
+    pub bias_gain: f64,     // Nm per rpm second, integral trim
+    pub bias_max: f64,      // Nm, clamp
     last: Option<SimTime>,
 }
 
@@ -27,7 +29,13 @@ impl SpeedObserver {
             cylinders: 4.0,
             fric_a: 14.0,
             fric_b: 0.021,      // 14.0 + 0.021·83.8 = 15.76 Nm at idle, matching eta_cal's torque at 6.1 mg
-            correct_gain: 0.5,  // 2 s time constant
+            // PI observer. Speed responds at 95.5 rpm/s per Nm with j_cal, so wn = sqrt(95.5 * bias_gain) = 1.38 rad/s
+            // and zeta = 0.72.
+            // Proportional alone cannot reject a constant load: at the old 0.5 it left 191 rpm of
+            // error per Nm
+            correct_gain: 1.0,
+            bias_gain: 0.04,
+            bias_max: 300.0,
             last: None,
         }
     }
@@ -48,17 +56,24 @@ impl Task for SpeedObserver {
         self.last = Some(s.now);
         if dt <= 0.0 || dt > 0.5 { return }
 
-        // --- predict from the fuel we commanded
+        // --- predict from the fuel we commanded, less whatever torque the model cannot see:
+        // external load, driveline drag, residual calibration error
         let m_kg = s.q_cmd * 1e-6 * self.cylinders;
         let t_ind = m_kg * self.lhv_cal * self.eta_cal / (4.0 * PI);
         let omega = s.n_model * 2.0 * PI / 60.0;
+        // LossModel runs later in the 10ms table, so warmup_mult is one cycle old. It moves over minutes;
+        // 10 ms is nothing.
         let t_fric = (self.fric_a + self.fric_b * omega) * s.warmup_mult;
-        s.n_model += (t_ind - t_fric) / self.j_cal * dt * 60.0 / (2.0 * PI);
+        s.n_model += (t_ind - t_fric - s.t_bias) / self.j_cal * dt * 60.0 / (2.0 * PI);
 
-        // --- correct toward the trusted sensor, UNLESS a fault is being evaluated. Freezing during the
-        // debounce windows is what stops the model from quietly following a lying sensor and voting for it.
+        // --- correct toward the trusted sensor, UNLESS a fault is being evaluated.
+        // Both terms freeze: the integrator would otherwise learn a lying sensor as load and make the
+        // model agree with it, destroying the third opinion.
         if !s.freeze_adaptation {
-            s.n_model += self.correct_gain * (s.n_eng - s.n_model) * dt;
+            let err = s.n_eng - s.n_model;
+            s.n_model += self.correct_gain * err * dt;
+            s.t_bias -= self.bias_gain * err * dt;
+            s.t_bias = s.t_bias.clamp(-self.bias_max, self.bias_max);
         }
 
         s.n_model = s.n_model.max(0.0);

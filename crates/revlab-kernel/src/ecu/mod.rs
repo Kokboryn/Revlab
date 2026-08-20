@@ -65,6 +65,7 @@ pub struct EcuState {
     m_air_est_sd: f64,
     pub t_ect_c: f64,
     pub warmup_mult: f64,
+    pub t_bias: f64,
 }
 
 pub trait Task: Send {
@@ -97,6 +98,7 @@ pub struct EcuPorts {
     pub t_loss: Port,
     pub t_ind_req: Port,
     pub freeze: Port,
+    pub t_bias: Port,
 }
 
 pub struct Ecu {
@@ -138,6 +140,7 @@ impl Ecu {
                 m_air_est_sd: 0.5,
                 t_ect_c: 20.0,
                 warmup_mult: 1.0,
+                t_bias: 0.0,
             },
             tasks: Vec::new(),
             p,
@@ -210,5 +213,6 @@ impl Component for Ecu {
         ctx.bus.set(self.p.t_loss, self.state.t_loss);
         ctx.bus.set(self.p.t_ind_req, self.state.t_ind_req);
         ctx.bus.set(self.p.freeze, if self.state.freeze_adaptation { 1.0 } else { 0.0 });
+        ctx.bus.set(self.p.t_bias, self.state.t_bias);
     }
 }
