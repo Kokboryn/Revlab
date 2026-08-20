@@ -4,7 +4,7 @@ mod keyboard;
 use std::f64::consts::PI;
 use revlab_core::{SimDuration, SimTime};
 use revlab_kernel::{Kernel, Port};
-use revlab_kernel::plant::engine::{Engine, EngineBuilder};
+use revlab_kernel::plant::engine::{Engine, EngineBuilder, EnginePorts};
 use revlab_kernel::plant::{friction::ChenFlynn, fuel::Fuel, geometry::Geometry};
 use revlab_kernel::sensors::{crank_wheel::CrankWheel};
 use revlab_kernel::ecu::{Ecu, EcuPorts, Rate, idle::IdleTask};
@@ -16,14 +16,15 @@ use revlab_kernel::sensors::cam_wheel::CamWheel;
 use scenario::{Scenario, Event, parse_args};
 use revlab_kernel::plant::{environment::Environment, intake::IntakeManifold};
 use revlab_kernel::plant::load::LoadProfile;
-use revlab_kernel::plant::turbo::Turbo;
-use revlab_kernel::plant::exhaust::ExhaustManifold;
+use revlab_kernel::plant::turbo::{Turbo, TurboPorts};
+use revlab_kernel::plant::exhaust::{ExhaustManifold, ExhaustPorts};
 use revlab_kernel::sensors::map_maf::AnalogSensor;
 use revlab_kernel::ecu::airpath::{AirEstimator, SmokeLimiter};
 use revlab_kernel::ecu::driver::DriverDemand;
 use revlab_kernel::ecu::loss::{LossModel, WarmupComp};
 use revlab_kernel::ecu::limits::RevLimiter;
 use revlab_kernel::pacer::Pacer;
+use revlab_kernel::plant::intake::IntakePorts;
 use revlab_kernel::plant::thermal::ThermalSystem;
 
 struct RawGuard;
@@ -101,10 +102,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(ThermalSystem::ea288(m_fuel, t_amb, t_cool, t_oil, visc_mult, 293.15)));
 
     k.add(Box::new(Environment::standard(p_amb, t_amb)));
-    k.add(Box::new(Turbo::vnt_small_diesel(p_amb, t_amb, p_im, p_em, t_em, vnt, m_comp, t_charge,m_turb, n_tc)));
-    k.add(Box::new(IntakeManifold::new(0.0025, t_charge, m_dot_air, m_comp, p_im, t_im, m_dot_maf, 101_325.0, 293.15)));
+    k.add(Box::new(Turbo::vnt_small_diesel(TurboPorts {
+        p_amb, t_amb, p_im, p_em, t_em, vnt_cmd: vnt, m_comp, t_comp: t_charge, m_turb, n_tc,
+    })));
+    k.add(Box::new(IntakeManifold::new(0.0025, IntakePorts {
+        t_up: t_charge, m_dot_eng: m_dot_air, m_comp_in: m_comp, p: p_im, t: t_im, m_dot_in: m_dot_maf,
+    }, 101_325.0, 293.15)));
 
-    k.add(Box::new(ExhaustManifold::new(0.0015, m_dot_air, m_fuel, t_im, m_turb, p_em, t_em, 101_325.0, 500.0)));
+    k.add(Box::new(ExhaustManifold::new(0.0015, ExhaustPorts {
+        m_air: m_dot_air, m_fuel, t_im, m_turb, p: p_em, t: t_em,
+    }, 101_325.0, 500.0)));
 
     // Hotwire MAF: fast element, but noisy and prone to error during fast flow changes - which is why
     // real ECUs blend it with speed-density rather than trusting it alone
@@ -112,7 +119,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
-    k.add(Box::new(Engine::new(par, q_cmd, omega, theta, p_im, t_im, m_dot_air, afr, m_fuel, t_load, visc_mult, IDLE_RPM)));
+    k.add(Box::new(Engine::new(par, EnginePorts {
+        q_cmd, p_im, t_im, t_load, visc_mult, omega, theta, m_dot_air, afr, m_fuel,
+    }, IDLE_RPM)));
 
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
     let mut speed_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, IDLE_RPM)];

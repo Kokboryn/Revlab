@@ -5,6 +5,18 @@ pub const R_EXH: f64 = 287.0;       // close enough to air at these AFRs
 pub const CP_EXH: f64 = 1150.0;     // J/(kg·K), hot combustion products
 pub const GAMMA_EXH: f64 = 1.33;
 
+#[derive(Copy, Clone)]
+pub struct ExhaustPorts {
+    // inputs
+    pub m_air: Port,
+    pub m_fuel: Port,
+    pub t_im: Port,
+    pub m_turb: Port,   // turbine flow, from the turbo component
+    // outputs
+    pub p: Port,
+    pub t: Port,
+}
+
 /// Exhaust manifold: a filling and emptying volume like the intake, plus a temperature state. Gas leaves the cylinder carrying the fuel energy that did NOT become indicated work.
 pub struct ExhaustManifold {
     p: f64,
@@ -13,28 +25,20 @@ pub struct ExhaustManifold {
     pub eta_ind_nom: f64,   // fraction of fuel energy that became work
     pub t_wall: f64,        // K, manifold wall - sink for heat loss
     pub h_loss: f64,        // W/K, lumped wall heat transfer
-    m_air_in: Port,
-    m_fuel_in: Port,
-    t_im: Port,
-    m_turb_out_in: Port,    // turbine flow, from the turbo component
-    p_out: Port,
-    t_out: Port,
+    ports: ExhaustPorts,
     dt: f64,
 }
 
 impl ExhaustManifold {
     pub const STEP: SimDuration = SimDuration::from_millis(1);
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(volume: f64, m_air_in: Port, m_fuel_in: Port, t_im: Port,
-                m_turb_out_in: Port, p_out: Port, t_out: Port,
-                p_init: f64, t_init: f64) -> Self {
+    pub fn new(volume: f64, ports: ExhaustPorts, p_init: f64, t_init: f64) -> Self {
         ExhaustManifold {
             p: p_init, t: t_init, volume,
             eta_ind_nom: 0.40,
             t_wall: 450.0,
             h_loss: 3.0,
-            m_air_in, m_fuel_in, t_im, m_turb_out_in, p_out, t_out,
+            ports,
             dt: Self::STEP.as_secs_f64(),
         }
     }
@@ -47,10 +51,10 @@ impl Component for ExhaustManifold {
 
     fn step(&mut self, _t: u16, ctx: &mut Ctx<'_>) {
         const LHV: f64 = 42.7e6;
-        let m_air   = ctx.bus.get(self.m_air_in);
-        let m_fuel  = ctx.bus.get(self.m_fuel_in);
-        let t_im    = ctx.bus.get(self.t_im);
-        let m_out   = ctx.bus.get(self.m_turb_out_in);
+        let m_air   = ctx.bus.get(self.ports.m_air);
+        let m_fuel  = ctx.bus.get(self.ports.m_fuel);
+        let t_im    = ctx.bus.get(self.ports.t_im);
+        let m_out   = ctx.bus.get(self.ports.m_turb);
         let m_in    = m_air + m_fuel;
 
         // --- port temperature: energy not converted to work heats the gas
@@ -68,7 +72,7 @@ impl Component for ExhaustManifold {
             self.p = (self.p + R_EXH * self.t / self.volume * (m_in - m_out) * h).max(5_000.0);
         }
 
-        ctx.bus.set(self.p_out, self.p);
-        ctx.bus.set(self.t_out, self.t);
+        ctx.bus.set(self.ports.p, self.p);
+        ctx.bus.set(self.ports.t, self.t);
     }
 }

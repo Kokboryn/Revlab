@@ -4,14 +4,29 @@ use crate::{Component, Ctx, Port, Trigger};
 use super::gas::{psi, CP_AIR, GAMMA, R_AIR};
 use super::exhaust::{CP_EXH, GAMMA_EXH, R_EXH};
 
-/// Turbocharger: compressor, turbine and shaft as one device.
+#[derive(Copy, Clone)]
+pub struct TurboPorts {
+    // inputs
+    pub p_amb: Port,
+    pub t_amb: Port,
+    pub p_im: Port,     // compressor discharge = manifold pressure
+    pub p_em: Port,
+    pub t_em: Port,
+    pub vnt_cmd: Port,  // 0 = closed, 1 = open
+    // outputs
+    pub m_comp: Port,
+    pub t_comp: Port,   // post-intercooler charge temperature
+    pub m_turb: Port,
+    pub n_tc: Port,     // rpm, for the sensor
+}
+/// Turbocharger: compressor, turbine, and shaft as one device.
 ///
 /// The compressor map is a normalized ellipse in (flow, head) rather than a measured table - the right shape, not a specific turbo.
 /// Swapping in real map data later means replacing `flow_param` only
 pub struct Turbo {
     omega: f64,                 // rad/s, shaft
     pub j_tc: f64,              // kg·m²
-    pub r_c: f64,               // m, compressor wheel radius
+    pub r_c: f64,               // m, compressor-wheel radius
     pub psi_max: f64,           // peak head coefficient
     pub phi_max: f64,           // choke flow coefficient
     pub eta_c: f64,
@@ -20,25 +35,14 @@ pub struct Turbo {
     pub a_t_min: f64,           // m², VNT vanes closed
     pub a_t_max: f64,           // m², VNT vanes open
     pub ic_eff: f64,            // intercooler effectiveness
-    p_amb: Port, t_amb: Port,
-    p_im: Port,                 // compressor discharge = manifold pressure
-    p_em: Port, t_em: Port,
-    vnt_cmd: Port,              // 0 = closed, 1 = open
-    m_comp_out: Port,
-    t_comp_out: Port,           // post-intercooler charge temperature
-    m_turb_out: Port,
-    n_tc_out: Port,             // rpm, for the sensor
+    ports: TurboPorts,
     dt: f64,
 }
 
 impl Turbo {
     pub const STEP: SimDuration = SimDuration::from_millis(1);
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn vnt_small_diesel(
-        p_amb: Port, t_amb: Port, p_im: Port, p_em: Port, t_em: Port,
-        vnt_cmd: Port, m_comp_out: Port, t_comp_out: Port,
-        m_turb_out: Port, n_tc_out: Port) -> Self {
+    pub fn vnt_small_diesel(ports: TurboPorts) -> Self {
         Turbo {
             omega: 2000.0,      // idling, barely turning
             j_tc: 2.0e-5,
@@ -51,7 +55,7 @@ impl Turbo {
             a_t_min: 1.2e-4,
             a_t_max: 5.0e-4,
             ic_eff: 0.65,
-            p_amb, t_amb, p_im, p_em, t_em, vnt_cmd, m_comp_out, t_comp_out, m_turb_out, n_tc_out,
+            ports,
             dt: Self::STEP.as_secs_f64(),
         }
     }
@@ -79,12 +83,12 @@ impl Component for Turbo {
     }
 
     fn step(&mut self, _t: u16, ctx: &mut Ctx<'_>) {
-        let p_amb = ctx.bus.get(self.p_amb);
-        let t_amb = ctx.bus.get(self.t_amb);
-        let p_im  = ctx.bus.get(self.p_im);
-        let p_em  = ctx.bus.get(self.p_em);
-        let t_em  = ctx.bus.get(self.t_em);
-        let vnt   = ctx.bus.get(self.vnt_cmd).clamp(0.0, 1.0);
+        let p_amb = ctx.bus.get(self.ports.p_amb);
+        let t_amb = ctx.bus.get(self.ports.t_amb);
+        let p_im  = ctx.bus.get(self.ports.p_im);
+        let p_em  = ctx.bus.get(self.ports.p_em);
+        let t_em  = ctx.bus.get(self.ports.t_em);
+        let vnt   = ctx.bus.get(self.ports.vnt_cmd).clamp(0.0, 1.0);
 
         // --- compressor
         let m_c = self.comp_flow(p_amb, t_amb, p_im).max(0.0);
@@ -113,9 +117,9 @@ impl Component for Turbo {
             self.omega = self.omega.clamp(200.0, 25_000.0);
         }
 
-        ctx.bus.set(self.m_comp_out, m_c);
-        ctx.bus.set(self.t_comp_out, t_charge);
-        ctx.bus.set(self.m_turb_out, m_t);
-        ctx.bus.set(self.n_tc_out, self.rpm());
+        ctx.bus.set(self.ports.m_comp, m_c);
+        ctx.bus.set(self.ports.t_comp, t_charge);
+        ctx.bus.set(self.ports.m_turb, m_t);
+        ctx.bus.set(self.ports.n_tc, self.rpm());
     }
 }
