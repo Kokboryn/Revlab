@@ -63,6 +63,8 @@ pub struct EcuState {
     pub cam_valid: bool,
     pub m_maf_meas: f64,
     m_air_est_sd: f64,
+    pub t_ect_c: f64,
+    pub warmup_mult: f64,
 }
 
 pub trait Task: Send {
@@ -84,6 +86,7 @@ pub struct EcuPorts {
     pub crank_valid: Port,
     pub cam_valid: Port,
     pub m_maf: Port,
+    pub t_ect_c: Port,
     // outputs
     pub q_cmd: Port,
     pub t_arb: Port,
@@ -93,6 +96,7 @@ pub struct EcuPorts {
     pub m_air_est: Port,
     pub t_loss: Port,
     pub t_ind_req: Port,
+    pub freeze: Port,
 }
 
 pub struct Ecu {
@@ -132,6 +136,8 @@ impl Ecu {
                 cam_valid: true,
                 m_maf_meas: 0.0,
                 m_air_est_sd: 0.5,
+                t_ect_c: 20.0,
+                warmup_mult: 1.0,
             },
             tasks: Vec::new(),
             p,
@@ -167,6 +173,7 @@ impl Component for Ecu {
         self.state.crank_valid  = ctx.bus.get(self.p.crank_valid) > 0.5;
         self.state.cam_valid    = ctx.bus.get(self.p.cam_valid) > 0.5;
         self.state.m_maf_meas   = ctx.bus.get(self.p.m_maf);
+        self.state.t_ect_c      = ctx.bus.get(self.p.t_ect_c) - 273.15;
 
         let n_new = match self.state.speed_source {
             diag::SpeedSource::Crank if self.state.crank_valid => Some(self.state.n_crank),
@@ -202,5 +209,6 @@ impl Component for Ecu {
         ctx.bus.set(self.p.m_air_est, self.state.m_air_est);
         ctx.bus.set(self.p.t_loss, self.state.t_loss);
         ctx.bus.set(self.p.t_ind_req, self.state.t_ind_req);
+        ctx.bus.set(self.p.freeze, if self.state.freeze_adaptation { 1.0 } else { 0.0 });
     }
 }

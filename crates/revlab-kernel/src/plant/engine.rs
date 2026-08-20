@@ -64,6 +64,7 @@ pub struct Engine {
     afr_out: Port,
     m_fuel_out: Port,
     t_load: Port,
+    visc_mult: Port,
     dt: f64,
 }
 
@@ -72,13 +73,13 @@ impl Engine {
 
     pub fn new(p: EnginePar, q_cmd: Port, omega_out: Port, theta_out: Port,
                p_im: Port, t_im: Port, m_dot_air_out: Port, afr_out: Port,
-               m_fuel_out: Port, t_load: Port, idle_rpm: f64) -> Self {
+               m_fuel_out: Port, t_load: Port, visc_mult: Port, idle_rpm: f64) -> Self {
         Engine {
             omega: idle_rpm * 2.0 * PI / 60.0,
             theta: 0.0,
             running: true,
             p, q_cmd, omega_out, theta_out,
-            p_im, t_im, m_dot_air_out, afr_out, t_load, m_fuel_out,
+            p_im, t_im, m_dot_air_out, afr_out, m_fuel_out, t_load, visc_mult,
             dt: Self::STEP.as_secs_f64(),
         }
     }
@@ -114,7 +115,8 @@ impl Component for Engine {
     fn step(&mut self, _trig: u16, ctx: &mut Ctx<'_>) {
         let q = ctx.bus.get(self.q_cmd);
         let t_load = ctx.bus.get(self.t_load);
-        let t_net = self.indicated_torque(q) - self.friction_torque() - t_load;
+        let visc = ctx.bus.get(self.visc_mult).max(1.0);
+        let t_net = self.indicated_torque(q) - self.friction_torque() * visc - t_load;
 
         // Semi implicit Euler: update ω first, integrate 0 from the new ω
         self.omega += t_net / self.p.inertia * self.dt;

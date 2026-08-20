@@ -33,7 +33,7 @@ impl Component for Keyboard {
         vec![Trigger::Periodic { period: SimDuration::from_millis(20), offset: SimDuration::from_micros(950) }]
     }
 
-    fn step(&mut self, trig: u16, ctx: &mut Ctx<'_>) {
+    fn step(&mut self, _trig: u16, ctx: &mut Ctx<'_>) {
         while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
             if let Ok(Event::Key(k)) = event::read() {
                 if k.kind != KeyEventKind::Press { continue; }

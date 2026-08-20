@@ -72,7 +72,7 @@ impl Component for CamWheel {
             match self.fault.apply(n, ta) {
                 Some(v) => {
                     ctx.bus.set(self.n_cam_out, v);
-                    ctx.bus.set(self.valid_out, 0.0);
+                    ctx.bus.set(self.valid_out, 1.0);
                 }
                 // Open circuit: no signal at all. Indistinguishable from a stopped engine at the ECU,
                 // which is correct

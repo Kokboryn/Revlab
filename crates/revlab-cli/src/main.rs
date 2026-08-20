@@ -21,9 +21,10 @@ use revlab_kernel::plant::exhaust::ExhaustManifold;
 use revlab_kernel::sensors::map_maf::AnalogSensor;
 use revlab_kernel::ecu::airpath::{AirEstimator, SmokeLimiter};
 use revlab_kernel::ecu::driver::DriverDemand;
-use revlab_kernel::ecu::loss::LossModel;
+use revlab_kernel::ecu::loss::{LossModel, WarmupComp};
 use revlab_kernel::ecu::limits::RevLimiter;
 use revlab_kernel::pacer::Pacer;
+use revlab_kernel::plant::thermal::ThermalSystem;
 
 struct RawGuard;
 impl Drop for RawGuard {
@@ -77,7 +78,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let m_maf_s: Port       = k.bus.alloc(0.0);
     let n_tc_s: Port        = k.bus.alloc(0.0);
     let t_em_s: Port        = k.bus.alloc(500.0);
-    let p_amb_s: Port        = k.bus.alloc(101_325.0);
+    let p_amb_s: Port       = k.bus.alloc(101_325.0);
+    let t_cool: Port        = k.bus.alloc(293.15);
+    let t_oil: Port         = k.bus.alloc(293.15);
+    let visc_mult: Port     = k.bus.alloc(3.2);
+    let t_cool_s: Port      = k.bus.alloc(293.15);
+    let freeze: Port        = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -89,6 +95,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     k.add(Box::new(AnalogSensor::new(n_tc, n_tc_s, 0.10, 200.0, 300_000.0, 0.0)));
     k.add(Box::new(AnalogSensor::new(p_amb, p_amb_s, 0.200, 100.0, 120_000.0, 101_325.0)));
+    k.add(Box::new(AnalogSensor::new(t_cool, t_cool_s, 1.000, 0.3, 400.0, 293.15)));
+    
+    k.add(Box::new(ThermalSystem::ea288(m_fuel, t_amb, t_cool, t_oil, visc_mult, 293.15)));
 
     k.add(Box::new(Environment::standard(p_amb, t_amb)));
     k.add(Box::new(Turbo::vnt_small_diesel(p_amb, t_amb, p_im, p_em, t_em, vnt, m_comp, t_charge,m_turb, n_tc)));
@@ -102,7 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
-    k.add(Box::new(Engine::new(par, q_cmd, omega, theta, p_im, t_im, m_dot_air, afr, m_fuel, t_load, IDLE_RPM)));
+    k.add(Box::new(Engine::new(par, q_cmd, omega, theta, p_im, t_im, m_dot_air, afr, m_fuel, t_load, visc_mult, IDLE_RPM)));
 
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
     let mut speed_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, IDLE_RPM)];
@@ -160,7 +169,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             t_ind_req,
             cam_valid,
             crank_valid,
+            t_ect_c: t_cool_s,
+            freeze,
         }, 6.0)
+            .task(Rate::Ms10, Box::new(WarmupComp::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedPlausibility::default()))
             .task(Rate::Ms10, Box::new(LimpMode { torque_max: 40.0 }))
@@ -186,15 +198,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("m_air".into(), m_dot_air),
              ("afr".into(), afr),
              ("t_load".into(), t_load),
-             ("p_em".into(), p_em),
+             ("p_em".into(), p_em), 
              ("t_em".into(), t_em),
              ("n_tc".into(), n_tc),
              ("q_lim".into(), q_lim),
-             ("m_air_est".into(), m_air_est),
+             ("m_air_est".into(), m_air_est), 
              ("t_loss".into(), t_loss),
              ("t_ind_req".into(), t_ind_req),
              ("pedal".into(), pedal),
-             ("m_maf_s".into(), m_maf_s)],
+             ("m_maf_s".into(), m_maf_s),
+             ("t_cool".into(), t_cool),
+             ("t_ect".into(), t_cool_s),
+             ("t_oil".into(), t_oil),
+             ("visc_mult".into(), visc_mult),
+             ("freeze".into(), freeze),
+             ("crank_valid".into(), crank_valid),
+             ("cam_valid".into(), cam_valid),],
         SimDuration::from_millis(10),
     )?));
 

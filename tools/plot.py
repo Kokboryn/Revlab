@@ -3,16 +3,56 @@
 
 usage:  tools/plot.py [run.csv] [-o out.png] [--show]
 
-Panels are chosen from whichever columns are present, so this keeps working when the logger's column list changes. """
+Panels are derived from  the CSV's columns. Known columns are grouped and scaled via SPEC; anything unrecognized gets its
+own panel, so new logger columns appear without editing this file."""
 import argparse, csv, os, sys
 
-RAD_S_TO_RPM = 60.0 / (2.0 * 3.141592653589793)
+RPM = 60.0 / (2.0 * 3.141592653589793)
+K2C = lambda v: v - 273.15
+PA2KPA = lambda v: v / 1000.0
 
-C_TRUE  = '#c1440e'   # ground truth
-C_CRANK = '#2a628f'
-C_CAM   = '#3f7d20'
-C_TRQ   = '#7d3f9c'
-C_FUEL  = '#b8860b'
+# column -> (panel, label, transform, color, twin?)
+SPEC = {
+    'omega':        ('speed',   'true speed (plant)',   lambda v: v * RPM,    '#c1440e',  False),
+    'n_crank':      ('speed',   'crank sensor',         None,                           '#2a628f',  False),
+    'n_cam':        ('speed',   'cam sensor',           None,                           '#3f7d20',  False),
+    'n_model':      ('speed',   'ECU model',            None,                           '#9467bd',  False),
+
+    't_arb':        ('torque',  'arbitrated',           None,                           '#7d3f9c',  False),
+    't_ind_req':    ('torque',  'indicated req',        None,                           '#c17d0e',  False),
+    't_loss':       ('torque',  'losses',               None,                           '#888888',  False),
+    't_load':       ('torque',  'external load',        None,                           '#2a628f',  False),
+
+    'q_cmd':        ('fuel',    'commanded',            None,                           '#b8860b',  False),
+    'q_lim':        ('fuel',    'smoke limit',          None,                           '#c1440e',  False),
+
+    'p_im':         ('air',     'MAP [kPa]',            PA2KPA,                         '#1f7a8c',  False),
+    'p_em':         ('air',     'exhaust [kPa]',        PA2KPA,                         '#c1440e',  False),
+    'afr':          ('air',     'AFR',                  None,                           '#8c8c1f',  False),
+
+    'm_air':        ('flow',    'true air [g/s]',       lambda v: v*1000,      '#c1440e', False),
+    'm_air_est':    ('flow',    'ECU estimate [g/s]',   lambda v: v*1000,      '#2a628f', False),
+    'm_maf_s':      ('flow',    'MAF sensor [g/s]',     lambda v: v*1000,      '#3f7d20', False),
+
+    't_em':         ('temp',    'EGT [C]',              K2C,                            '#c1440e', False),
+    't_cool':       ('temp',    'coolant [C]',          K2C,                            '#1f7a8c', False),
+    't_oil':        ('temp',    'oil [C]',              K2C,                            '#b8860b', False),
+
+    'n_tc':         ('turbo',   'turbo speed [rpm]',    None,                           '#7d3f9c', False),
+    'visc_mult':    ('turbo',   'oil visc mult',        None,                           '#8c8c1f', True),
+
+    'pedal':        ('pedal',   'pedal [%]',            lambda v: v*100,       '#555555', False),
+}
+
+PANEL_LABEL = {
+    'speed': 'engine speed\n[rpm]', 'torque': 'torque\n[Nm]',
+    'fuel': 'fuel\n[mg/stroke]', 'air': 'pressure\n[kPa]',
+    'flow': 'air flow\n[g/s]', 'temp': 'temperature\n[C]',
+    'turbo': 'turbo', 'pedal': 'pedal [%]',
+}
+
+PANEL_HEIGHT = {'speed': 2.4, 'pedal': 0.7}
+PANEL_ORDER = ['speed', 'torque', 'fuel', 'air', 'flow', 'temp', 'turbo', 'pedal']
 
 DTC_LABEL = {0: 'passed', 1: 'pending', 2: 'confirmed'}
 
@@ -21,18 +61,13 @@ def load(path):
     with open(path, newline='') as f:
         rdr = csv.DictReader(f)
         names = rdr.fieldnames
-        rows = [r for r in rdr
-                if all(r.get(k) not in (None, '') for k in names)]
+        rows = [r for r in rdr if all(r.get(k) not in (None, '') for k in names)]
     if not rows:
         sys.exit(f'{path}: no complete data rows')
-    cols = {k: [float(r[k]) for r in rows] for k in names}
-    if 'omega' in cols:
-        cols['rpm'] = [v * RAD_S_TO_RPM for v in cols['omega']]
-    return cols
+    return names, {k: [float(r[k]) for r in rows] for k in names}
 
 
 def dtc_spans(t, dtc):
-    """Contiguous [start, end, state] runs, skipping state 0."""
     out, start, cur = [], t[0], dtc[0]
     for ti, d in zip(t, dtc):
         if d != cur:
@@ -57,97 +92,72 @@ def main():
         matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
-    c = load(a.csv)
+    names, c = load(a.csv)
     t = c['t_s']
 
-    panels = []
-    if 'rpm' in c:
-        panels.append('speed')
-    if 't_arb' in c:
-        panels.append('torque')
-    if 'q_cmd' in c:
-        panels.append('fuel')
-    if 'p_im' in c:
-        panels.append('air')
-    if 'pedal' in c:
-        panels.append('pedal')
-    if not panels:
-        sys.exit('nothing plottable: need omega, t_arb or q_cmd')
+    # --- assign every column to a panel; unknown ones get their own
+    panels = {}
+    for n in names:
+        if n in ('t_s', 'dtc'):
+            continue
+        if n in SPEC:
+            key = SPEC[n][0]
+        else:
+            key = f'_{n}'           # auto panel for an unrecognized column
+        panels.setdefault(key, []).append(n)
 
-    heights = {'speed': 2.4, 'torque': 1.0, 'fuel': 1.0, 'air': 1.2, 'pedal': 0.7}
-    fig, axes = plt.subplots(
-        len(panels), 1, sharex=True,
-        figsize=(10, 1.7 * sum(heights.get(p, 1.0) for p in panels)),
-        gridspec_kw={'height_ratios': [heights.get(p, 1.0) for p in panels]})
-    if len(panels) == 1:
+    ordered = [k for k in PANEL_ORDER if k in panels]
+    ordered += [k for k in panels if k not in PANEL_ORDER]
+
+    heights = [PANEL_HEIGHT.get(k, 1.1) for k in ordered]
+    fig, axes = plt.subplots(len(ordered), 1, sharex=True,
+                             figsize=(10, 1.7 * sum(heights)),
+                             gridspec_kw={'height_ratios': heights})
+    if len(ordered) == 1:
         axes = [axes]
-    ax = dict(zip(panels, axes))
+    ax = dict(zip(ordered, axes))
 
-    # --- DTC shading across every panel, so faults line up visually
     spans = dtc_spans(t, c['dtc']) if 'dtc' in c else []
-    for s, e, state in spans:
-        col = '#f4c542' if state == 1 else '#c1440e'
+    for s, e, st in spans:
+        col = '#f4c542' if st == 1 else '#c1440e'
         for axis in axes:
-            axis.axvspan(s, e, color=col,
-                         alpha=0.10 if state == 2 else 0.20, lw=0)
+            axis.axvspan(s, e, color=col, alpha=0.10 if st == 2 else 0.20, lw=0)
 
-    # --- speed
+    for key in ordered:
+        p = ax[key]
+        handles, twin = [], None
+        for n in panels[key]:
+            panel, label, fn, colour, is_twin = SPEC.get(
+                n, (key, n, None, None, False))
+            y = [fn(v) for v in c[n]] if fn else c[n]
+            target = p
+            if is_twin:
+                twin = twin or p.twinx()
+                target = twin
+                twin.set_ylabel(label, color=colour)
+            wide = (n == 'omega')
+            ln, = target.plot(t, y, lw=4.0 if wide else 1.1, color=colour,
+                              alpha=0.30 if wide else 0.9, label=label,
+                              zorder=1 if wide else 2)
+            handles.append(ln)
+        p.set_ylabel(PANEL_LABEL.get(key, key.lstrip('_')))
+        if len(handles) > 1:
+            p.legend(handles=handles, loc='best', fontsize=8, framealpha=0.95,
+                     ncols=min(3, len(handles)))
+        p.grid(alpha=0.22)
+        p.margins(x=0)
+
     if 'speed' in ax:
-        p = ax['speed']
-        if 'n_crank' in c:
-            p.plot(t, c['n_crank'], lw=0.9, color=C_CRANK, alpha=0.9,
-                   label='crank sensor')
-        if 'n_cam' in c:
-            p.plot(t, c['n_cam'], lw=0.9, color=C_CAM, alpha=0.85,
-                   label='cam sensor')
-        p.plot(t, c['rpm'], lw=4.0, color=C_TRUE, alpha=0.30, label='true speed (plant)', zorder=1)
-        p.set_ylabel('engine speed\n[rpm]')
-        p.legend(loc='best', fontsize=8.5, framealpha=0.95, ncols=3)
-        for s, _, state in spans:
-            p.annotate(f'P0016 {DTC_LABEL.get(int(state), state)}',
-                       xy=(s, p.get_ylim()[1]), xytext=(-3, -6),
-                       textcoords='offset points', rotation=90,
-                       fontsize=7.5, va='top', ha='right', color='0.25')
+        for s, _, st in spans:
+            ax['speed'].annotate(f'P0016 {DTC_LABEL.get(int(st), st)}',
+                                 xy=(s, ax['speed'].get_ylim()[1]),
+                                 xytext=(-3, -6), textcoords='offset points',
+                                 rotation=90, fontsize=7.5, va='top',
+                                 ha='right', color='0.25')
 
-    # --- torque
-    if 'torque' in ax:
-        p = ax['torque']
-        p.plot(t, c['t_arb'], lw=1.2, color=C_TRQ)
-        p.set_ylabel('ECU torque\n[Nm]')
-
-    # --- fuel
-    if 'fuel' in ax:
-        p = ax['fuel']
-        p.plot(t, c['q_cmd'], lw=1.2, color=C_FUEL)
-        p.set_ylabel('fuel cmd\n[mg/stroke]')
-
-    # --- airpath
-    if 'air' in ax:
-        p = ax['air']
-        l1, =  p.plot(t, [(101325.0 - v) for v in c['p_im']], lw=1.2, color='#1f7a8c', label='intake depression')
-        p.set_ylabel('intake\ndepression [Pa]')
-        handles = [l1]
-        if 'afr' in c:
-            q = p.twinx()
-            l2, = q.plot(t, c['afr'], lw=1.0, color='#8c8c1f', alpha=0.8, label='AFR')
-            q.set_ylabel('AFR', color='#8c8c1f')
-            handles.append(l2)
-        p.legend(handles=handles, loc='best', fontsize=8.5, framealpha=0.95)
-
-    # --- pedal
-    if 'pedal' in ax:
-        p = ax['pedal']
-        p.fill_between(t, [v*100 for v in c['pedal']], color='#555', alpha=0.35)
-        p.set_ylabel('pedal\n[%]')
-        p.set_ylim(0, 105)
-
-    for axis in axes:
-        axis.grid(alpha=0.22)
-        axis.margins(x=0)
     axes[-1].set_xlabel('simulation time [s]')
-
-    title = a.title or f'Revlab — {os.path.basename(a.csv)}'
-    axes[0].set_title(title, fontsize=11)
+    axes[0].set_title(a.title or f'Revlab — {os.path.basename(a.csv)}',
+                      fontsize=11)
     fig.tight_layout()
 
     out = a.out or os.path.splitext(a.csv)[0] + '.png'

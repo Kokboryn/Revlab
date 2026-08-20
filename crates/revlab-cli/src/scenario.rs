@@ -31,7 +31,7 @@ pub const NAMES: &[(&str, &str)] = &[
 impl Scenario {
     pub fn by_name(n: &str) -> Option<Scenario> {
         let (duration_s, events): (u64, Vec<Event>) = match n {
-            "nominal"       => (20, vec![]),
+            "nominal"       => (2400, vec![]),
             "crank_drift"   => (20, vec![Event::CrankFault { at_s: 10.0, fault: Fault::Drift { per_sec: 20.0 } }]),
             "crank_stuck"   => (20, vec![Event::CrankFault { at_s: 10.0, fault: Fault::StuckAt(800.0) }]),
             "crank_open"    => (20, vec![Event::CrankFault { at_s: 10.0, fault: Fault::OpenCircuit }]),

@@ -4,7 +4,8 @@ use super::{EcuState, Task};
 
 /// The ECU's own engine model - an independent third opinion on speed.
 ///
-/// It's constants are the ECU's calibration, not the plant's: j_cal is 5% off the true inertia, and the friction model is fitted so that it BALANCES the ECU's own torque model at idle. That mutual consistency
+/// It's constants are the ECU's calibration, not the plant's: j_cal is 5% off the true inertia, and the
+/// friction model is fitted so that it BALANCES the ECU's own torque model at idle. That mutual consistency
 /// matters more than absolute accuracy - a model biased against its own torque path would integrate away in seconds.
 pub struct SpeedObserver {
     pub j_cal: f64,         // kg·m²
@@ -51,15 +52,19 @@ impl Task for SpeedObserver {
         let m_kg = s.q_cmd * 1e-6 * self.cylinders;
         let t_ind = m_kg * self.lhv_cal * self.eta_cal / (4.0 * PI);
         let omega = s.n_model * 2.0 * PI / 60.0;
-        let t_fric = self.fric_a + self.fric_b * omega;
+        let t_fric = (self.fric_a + self.fric_b * omega) * s.warmup_mult;
         s.n_model += (t_ind - t_fric) / self.j_cal * dt * 60.0 / (2.0 * PI);
 
-        // --- correct toward the trusted sensor, UNLESS a fault is being evaluated. Freezing during the debounce windows is what stops the model from quietly following a lying sensor and voting for it.
+        // --- correct toward the trusted sensor, UNLESS a fault is being evaluated. Freezing during the
+        // debounce windows is what stops the model from quietly following a lying sensor and voting for it.
         if !s.freeze_adaptation {
             s.n_model += self.correct_gain * (s.n_eng - s.n_model) * dt;
         }
 
         s.n_model = s.n_model.max(0.0);
-        s.model_valid = true;
+        // A frozen correction must not license unbounded divergence. Past this band the model is not
+        // a usable third opinion, and diag must not arbitrate on it.
+        let plausible = (s.crank_valid || s.cam_valid) && (s.n_model - s.n_eng).abs() < 1000.0;
+        s.model_valid = plausible;
     }
 }

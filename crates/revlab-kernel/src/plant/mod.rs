@@ -10,3 +10,4 @@ pub mod boost;
 pub mod load;
 pub mod exhaust;
 pub mod turbo;
+pub mod thermal;
