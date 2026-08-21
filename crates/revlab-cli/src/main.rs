@@ -26,6 +26,8 @@ use revlab_kernel::ecu::limits::RevLimiter;
 use revlab_kernel::pacer::Pacer;
 use revlab_kernel::plant::intake::IntakePorts;
 use revlab_kernel::plant::thermal::ThermalSystem;
+use revlab_kernel::plant::road_load::{RoadLoad, RoadLoadPar, RoadLoadPorts};
+use revlab_kernel::plant::driveline::{Driveline, DrivelinePorts};
 
 struct RawGuard;
 impl Drop for RawGuard {
@@ -86,6 +88,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_cool_s: Port      = k.bus.alloc(293.15);
     let freeze: Port        = k.bus.alloc(0.0);
     let t_bias: Port        = k.bus.alloc(0.0);
+    let gear: Port          = k.bus.alloc(0.0);     // 0 = neutral; no scenario shifts yet
+    let f_road: Port        = k.bus.alloc(0.0);
+    let t_drive: Port       = k.bus.alloc(0.0);
+    let j_ext: Port         = k.bus.alloc(0.0);
+    let v_veh: Port         = k.bus.alloc(0.0);
+    let n_wheel: Port       = k.bus.alloc(0.0);
+    let grade: Port         = k.bus.alloc(0.0);
+    let brake: Port         = k.bus.alloc(0.0);
+    let headwind: Port      = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -120,7 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
     k.add(Box::new(Engine::new(par, EnginePorts {
-        q_cmd, p_im, t_im, t_load, visc_mult, omega, theta, m_dot_air, afr, m_fuel,
+        q_cmd, p_im, t_im, t_load, t_drive, j_ext, visc_mult, omega, theta, m_dot_air, afr, m_fuel,
     }, IDLE_RPM)));
 
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
@@ -159,6 +170,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     k.add(Box::new(AnalogSensor::new(p_im, p_im_s, 0.005, 300.0, 300_000.0, 101_325.0)));
     k.add(Box::new(AnalogSensor::new(t_im, t_im_s, 0.500, 0.5, 400.0, 293.15)));
+
+    k.add(Box::new(RoadLoad::new(RoadLoadPar::passat_b8_16tdi(), RoadLoadPorts {
+        v_veh, grade, headwind, brake, p_amb, t_amb, f_road,
+    })));
+    k.add(Box::new(Driveline::dq200_passat(RoadLoadPar::passat_b8_16tdi(), DrivelinePorts {
+        omega, gear, f_road, v_veh, n_wheel, t_drive, j_ext,
+    })));
 
     k.add(Box::new(
         Ecu::new(EcuPorts {
@@ -225,7 +243,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("freeze".into(), freeze),
              ("crank_valid".into(), crank_valid),
              ("cam_valid".into(), cam_valid),
-             ("t_bias".into(), t_bias),],
+             ("t_bias".into(), t_bias),
+             ("gear".into(), gear),
+             ("v_veh".into(), v_veh),
+             ("n_wheel".into(), n_wheel),
+             ("f_road".into(), f_road),
+             ("t_drive".into(), t_drive),
+             ("j_ext".into(), j_ext),],
         SimDuration::from_millis(10),
     )?));
 

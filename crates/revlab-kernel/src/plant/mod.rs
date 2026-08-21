@@ -10,3 +10,5 @@ pub mod load;
 pub mod exhaust;
 pub mod turbo;
 pub mod thermal;
+pub mod road_load;
+pub mod driveline;

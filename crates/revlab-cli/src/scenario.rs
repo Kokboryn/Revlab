@@ -21,7 +21,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("crank_drift", "crank sensor drifts +20 rpm/s from t=10s"),
     ("crank_stuck", "crank sensor freezes at 800 rpm from t=10s"),
     ("crank_open", "crank signal lost at t=10s"),
-    ("cam_drift", "CAM drifts instead - does the monitor lame the right sensor?"),
+    ("cam_drift", "CAM drifts instead - does the monitor blame the right sensor?"),
     ("load_step", "60 Nm load applied at t=5s - spools the turbo"),
     ("spool", "2500 rpm + 80 Nm at t=5s - turbo spools"),
     ("pedal_ramp", "pedal to 40% at t=5s, released at t=12s"),

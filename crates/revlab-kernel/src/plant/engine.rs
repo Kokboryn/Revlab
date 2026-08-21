@@ -61,7 +61,9 @@ pub struct EnginePorts {
     pub q_cmd: Port,
     pub p_im: Port,
     pub t_im: Port,
-    pub t_load: Port,
+    pub t_load: Port,       // scripted external load, from LoadProfile
+    pub t_drive: Port,      // driveline reaction at the crank
+    pub j_ext: Port,        // vehicle inertia reflected through the gearing
     pub visc_mult: Port,
     // outputs
     pub omega: Port,
@@ -123,12 +125,15 @@ impl Component for Engine {
 
     fn step(&mut self, _trig: u16, ctx: &mut Ctx<'_>) {
         let q = ctx.bus.get(self.ports.q_cmd);
-        let t_load = ctx.bus.get(self.ports.t_load);
+        let t_load = ctx.bus.get(self.ports.t_load) + ctx.bus.get(self.ports.t_drive);
+        let j_ext = ctx.bus.get(self.ports.j_ext).max(0.0);
         let visc = ctx.bus.get(self.ports.visc_mult).max(1.0);
         let t_net = self.indicated_torque(q) - self.friction_torque() * visc - t_load;
 
-        // Semi implicit Euler: update ω first, integrate 0 from the new ω
-        self.omega += t_net / self.p.inertia * self.dt;
+        // Rigid coupling: the driveline has no compliance and no clutch yet, so the vehicle is one
+        // degree of freedom with the crank and its inertia is reflected here rather than integrated
+        // separately. Stage 3 (clutch slip) makes a second integrator legitimate.
+        self.omega += t_net / (self.p.inertia + j_ext) * self.dt;
         if self.omega < self.p.stall_rad_s {
             self.running = false;
             self.omega = self.omega.max(0.0);
