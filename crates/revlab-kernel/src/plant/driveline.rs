@@ -30,12 +30,10 @@ impl Driveline {
     pub const STEP: SimDuration = SimDuration::from_millis(1);
 
     pub fn dq200_passat(p: RoadLoadPar, ports: DrivelinePorts) -> Self {
-        // PROVISIONAL. Gear ratios are the published DQ200 set; the final drive is a single guessed
-        // 4.438 applied to all seven, which is wrong for 5-7 (second output shaft, unmeasured). 7th
-        // here gives 2031 rpm at 100 km/h against a real ~1700-1800. Will be calibrated from the car:
-        // rpm will be readed at a steady known speed, i = n_eng / n_wheel.
+        // Measured from the vehicle: overall ratios = published DQ200 gear set x a single final drive
+        // of 3.617, which gears 4,5 and 7 all agree on to within 1%.
         Driveline {
-            gear_ratios: [16.727, 9.542, 6.44, 4.922, 3.763, 2.960, 2.401],
+            gear_ratios: [13.633, 7.777, 5.252, 4.011, 3.067, 2.413, 1.957],
             eta: 0.94,
             p, ports,
         }

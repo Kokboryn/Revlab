@@ -7,6 +7,7 @@ pub enum Event {
     Load       { at_s: f64, torque: f64 },
     Speed      { at_s: f64, rpm: f64 },
     Pedal      { at_s: f64, position: f64 },    // 0.0 to 1.0
+    Gear       { at_s: f64, gear: f64 },    // 0 = neutral, 1..7
 }
 
 pub struct Scenario {
@@ -26,6 +27,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("spool", "2500 rpm + 80 Nm at t=5s - turbo spools"),
     ("pedal_ramp", "pedal to 40% at t=5s, released at t=12s"),
     ("pedal_full", "pedal to 100% at t=5s, no load- watch the rev limit"),
+    ("drive_away", "4th engaged at t=2s from idle (~24 km/h), pedal to 50% at t=5s"),
 ];
 
 impl Scenario {
@@ -40,6 +42,7 @@ impl Scenario {
             "spool"         => (20, vec![Event::Speed { at_s: 5.0, rpm: 2500.0 }, Event::Load { at_s: 5.0, torque: 80.0 }]),
             "pedal_ramp"    => (20, vec![Event::Pedal { at_s: 5.0, position: 0.40 }, Event::Pedal { at_s: 12.0, position: 0.0 }]),
             "pedal_full"    => (20, vec![Event::Pedal { at_s: 5.0, position: 1.0 }]),
+            "drive_away"    => (30, vec![Event::Gear { at_s: 2.0, gear: 4.0 }, Event::Pedal { at_s: 5.0, position: 0.50 }]),
             _ => return None,
         };
         let about = NAMES.iter().find(|(k,_)| *k==n).map(|(_, v)| *v)?;

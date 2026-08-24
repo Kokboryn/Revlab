@@ -139,6 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pedal_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     let mut crank = CrankWheel::new(omega, n_meas, crank_valid,);
     let mut cam = CamWheel::new(omega, n_cam, cam_valid,);
+    let mut gear_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     for e in &sc.events {
         let at = |s: f64| SimTime::ZERO + SimDuration::from_millis((s * 1000.0) as u64);
         match *e {
@@ -147,6 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::Load { at_s, torque } => load_steps.push((at(at_s), torque)),
             Event::Speed { at_s, rpm } => speed_steps.push((at(at_s), rpm)),
             Event::Pedal { at_s, position } => pedal_steps.push((at(at_s), position)),
+            Event::Gear { at_s, gear: g  } => gear_steps.push((at(at_s), g)),
         }
     }
 
@@ -252,6 +254,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("j_ext".into(), j_ext),],
         SimDuration::from_millis(10),
     )?));
+    
+    // Last on purpose: inserting a component earlier shifts every later component's index, which reorders
+    // same timestamp RNG draws and changes the noise realization in every scenario.
+    k.add(Box::new(LoadProfile::new(gear_steps, gear)));
 
     let end = SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000);
     let chunk = SimDuration::from_millis(if args.live { 100 } else { 1000 });

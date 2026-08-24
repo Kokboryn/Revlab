@@ -32,7 +32,7 @@ pub struct RoadLoadPar {
 impl RoadLoadPar {
     pub fn passat_b8_16tdi() -> Self {
         RoadLoadPar {
-            mass: 1490.0,           // ~1415 kerb + driver
+            mass: 1582.0,       // 1502 curb (registration) + driver
             cd: 0.27,
             frontal_area: 2.19,
             c_rr: 0.010,
