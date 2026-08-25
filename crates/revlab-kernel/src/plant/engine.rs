@@ -71,6 +71,7 @@ pub struct EnginePorts {
     pub m_dot_air: Port,
     pub afr: Port,
     pub m_fuel: Port,
+    pub eta_ind: Port,
 }
 
 pub struct Engine {
@@ -97,14 +98,17 @@ impl Engine {
 
     pub fn rpm(&self) -> f64 { self.omega * 60.0 / (2.0 * PI) }
 
+    fn indicated_eta(&self, q_mg: f64) -> f64 {
+        let q = q_mg.clamp(0.0, self.p.q_max);
+        self.p.eta.eta(self.rpm(), q / self.p.q_max)
+    }
     /// T_ind = q · n_cyl · LHV · n_i / 4π
     /// The 4π is the four stroke cycle: one burn per two revolutions
     fn indicated_torque(&self, q_mg: f64) -> f64 {
         if !self.running { return 0.0; }
         let q = q_mg.clamp(0.0, self.p.q_max);
-        let load = q / self.p.q_max;
         let m_kg = q * 1e-6 * self.p.cylinders;
-        m_kg * self.p.lhv * self.p.eta.eta(self.rpm(), load) / (4.0 * PI)
+        m_kg * self.p.lhv * self.indicated_eta(q_mg) / (4.0 * PI)
     }
 
     fn friction_torque(&self) -> f64 {
@@ -151,5 +155,6 @@ impl Component for Engine {
         ctx.bus.set(self.ports.m_dot_air, m_air);
         ctx.bus.set(self.ports.afr, if m_fuel > 1e-9 { m_air / m_fuel } else { 999.0 });
         ctx.bus.set(self.ports.m_fuel, m_fuel);
+        ctx.bus.set(self.ports.eta_ind, self.indicated_eta(q));
     }
 }

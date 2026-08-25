@@ -97,6 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grade: Port         = k.bus.alloc(0.0);
     let brake: Port         = k.bus.alloc(0.0);
     let headwind: Port      = k.bus.alloc(0.0);
+    let eta_ind: Port       = k.bus.alloc(0.40);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -121,7 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }, 101_325.0, 293.15)));
 
     k.add(Box::new(ExhaustManifold::new(0.0015, ExhaustPorts {
-        m_air: m_dot_air, m_fuel, t_im, m_turb, p: p_em, t: t_em,
+        m_air: m_dot_air, m_fuel, t_im, m_turb, p: p_em, t: t_em, eta_ind,
     }, 101_325.0, 500.0)));
 
     // Hotwire MAF: fast element, but noisy and prone to error during fast flow changes - which is why
@@ -131,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
     k.add(Box::new(Engine::new(par, EnginePorts {
-        q_cmd, p_im, t_im, t_load, t_drive, j_ext, visc_mult, omega, theta, m_dot_air, afr, m_fuel,
+        q_cmd, p_im, t_im, t_load, t_drive, j_ext, visc_mult, omega, theta, m_dot_air, afr, m_fuel, eta_ind,
     }, IDLE_RPM)));
 
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
@@ -251,7 +252,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("n_wheel".into(), n_wheel),
              ("f_road".into(), f_road),
              ("t_drive".into(), t_drive),
-             ("j_ext".into(), j_ext),],
+             ("j_ext".into(), j_ext),
+             ("eta_ind".into(), eta_ind),],
         SimDuration::from_millis(10),
     )?));
     

@@ -12,6 +12,7 @@ pub struct ExhaustPorts {
     pub m_fuel: Port,
     pub t_im: Port,
     pub m_turb: Port,   // turbine flow, from the turbo component
+    pub eta_ind: Port,
     // outputs
     pub p: Port,
     pub t: Port,
@@ -22,7 +23,7 @@ pub struct ExhaustManifold {
     p: f64,
     t: f64,
     pub volume: f64,        // m³
-    pub eta_ind_nom: f64,   // fraction of fuel energy that became work
+    pub f_exh: f64,
     pub t_wall: f64,        // K, manifold wall - sink for heat loss
     pub h_loss: f64,        // W/K, lumped wall heat transfer
     ports: ExhaustPorts,
@@ -35,7 +36,7 @@ impl ExhaustManifold {
     pub fn new(volume: f64, ports: ExhaustPorts, p_init: f64, t_init: f64) -> Self {
         ExhaustManifold {
             p: p_init, t: t_init, volume,
-            eta_ind_nom: 0.40,
+            f_exh: 0.63,
             t_wall: 450.0,
             h_loss: 3.0,
             ports,
@@ -56,10 +57,11 @@ impl Component for ExhaustManifold {
         let t_im    = ctx.bus.get(self.ports.t_im);
         let m_out   = ctx.bus.get(self.ports.m_turb);
         let m_in    = m_air + m_fuel;
+        let eta_ind = ctx.bus.get(self.ports.eta_ind).clamp(0.0, 0.6);
 
         // --- port temperature: energy not converted to work heats the gas
         let t_port = if m_in > 1e-6 {
-            t_im + m_fuel * LHV * (1.0 - self.eta_ind_nom) / (m_in * CP_EXH)
+            t_im + m_fuel * LHV * (1.0 - eta_ind) * self.f_exh / (m_in * CP_EXH)
         } else { t_im };
 
         const N_SUB: u32 = 10;
@@ -68,7 +70,7 @@ impl Component for ExhaustManifold {
             let m_gas = self.p * self.volume / (R_EXH * self.t);
             let d_mix = m_in * (t_port - self.t) / m_gas;
             let d_wall = -self.h_loss * (self.t - self.t_wall) / (m_gas * CP_EXH);
-            self.t = (self.t + (d_mix + d_wall) * h).clamp(250.0, 1300.0);
+            self.t = (self.t + (d_mix + d_wall) * h).clamp(250.0, 1500.0);
             self.p = (self.p + R_EXH * self.t / self.volume * (m_in - m_out) * h).max(5_000.0);
         }
 
