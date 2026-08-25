@@ -1,20 +1,27 @@
+use revlab_core::Map1d;
 use super::{EcuState, Task};
 
 /// ECT derived friction correction, published for every model that needs it. Own task because it depends
 /// only on coolant temperature, so it can run at the top of the table where consumers get a fresh value
-pub struct WarmupComp { pub slope: f64, pub ref_c: f64 }
+pub struct WarmupComp(pub Map1d);
 
 impl WarmupComp {
-    // warmup_slope fitted from the same run: t_ind_req/t_loss was 1.74 at 20 C, 1.47 at 39 C, 1.24 at 66 C -- linear
-    // at -0.0109 per degC, hitting 1.00 at 90 C.
-    pub fn di_diesel_1_6() -> Self { WarmupComp { slope: 0.0109, ref_c: 90.0 } }
+    pub fn di_diesel_1_6() -> Self {
+        // ECT indexed friction correction, measured against the plant across a full warmup: the multiplier
+        // the governor actually needed was 1.734 at 20 C, 1.445 at 38, 1.225 at 71, 1.139 at 86. The curve
+        // is convex, so the earlier straight line was over by 0.12 in the middle and under by 0.10 at the
+        // top. The 100 C point is extrapolated -- nominal idle plateaus at 85 and never reaches it.
+        WarmupComp(Map1d::new(
+            vec![20.0, 38.0, 71.0, 86.0, 100.0],
+            vec![1.734, 1.445, 1.225, 1.139, 1.060],
+        ))
+    }
 }
 
 impl Task for WarmupComp {
     fn name(&self) -> &'static str { "WarmupComp" }
-
     fn run(&mut self, s: &mut EcuState) {
-        s.warmup_mult = 1.0 + self.slope * (self.ref_c - s.t_ect_c).max(0.0);
+        s.warmup_mult = self.0.get(s.t_ect_c);
     }
 }
 
@@ -33,7 +40,8 @@ pub struct LossModel {
 
 impl LossModel {
     pub fn di_diesel_1_6() -> Self {
-        // Base fit is a WARM engine: at the 90 C reference WarmupComp returns unity.
+        // Base fit is the warm engine friction at 800 rpm; WarmupComp scales it by an ECT indexed 
+        // multiplier that does not reach unity in the operating range.
         LossModel {
             fric_a: 11.0,
             fric_b: 0.021,

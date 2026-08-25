@@ -13,6 +13,7 @@ pub struct ExhaustPorts {
     pub t_im: Port,
     pub m_turb: Port,   // turbine flow, from the turbo component
     pub eta_ind: Port,
+    pub q_coolant: Port,    // W, in cylinder heat rejection to coolant and oil
     // outputs
     pub p: Port,
     pub t: Port,
@@ -73,8 +74,10 @@ impl Component for ExhaustManifold {
             self.t = (self.t + (d_mix + d_wall) * h).clamp(250.0, 1500.0);
             self.p = (self.p + R_EXH * self.t / self.volume * (m_in - m_out) * h).max(5_000.0);
         }
+        let q_rej = m_fuel * LHV * (1.0 - eta_ind) * (1.0 - self.f_exh);
 
         ctx.bus.set(self.ports.p, self.p);
         ctx.bus.set(self.ports.t, self.t);
+        ctx.bus.set(self.ports.q_coolant, q_rej);
     }
 }

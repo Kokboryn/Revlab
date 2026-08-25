@@ -72,6 +72,7 @@ pub struct EnginePorts {
     pub afr: Port,
     pub m_fuel: Port,
     pub eta_ind: Port,
+    pub q_fric: Port,       // W, friction work becoming heat in the oil
 }
 
 pub struct Engine {
@@ -156,5 +157,6 @@ impl Component for Engine {
         ctx.bus.set(self.ports.afr, if m_fuel > 1e-9 { m_air / m_fuel } else { 999.0 });
         ctx.bus.set(self.ports.m_fuel, m_fuel);
         ctx.bus.set(self.ports.eta_ind, self.indicated_eta(q));
+        ctx.bus.set(self.ports.q_fric, self.friction_torque() * visc * self.omega);
     }
 }

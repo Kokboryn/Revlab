@@ -98,6 +98,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let brake: Port         = k.bus.alloc(0.0);
     let headwind: Port      = k.bus.alloc(0.0);
     let eta_ind: Port       = k.bus.alloc(0.40);
+    let q_coolant: Port     = k.bus.alloc(0.0);
+    let q_fric: Port        = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -111,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(AnalogSensor::new(p_amb, p_amb_s, 0.200, 100.0, 120_000.0, 101_325.0)));
     k.add(Box::new(AnalogSensor::new(t_cool, t_cool_s, 1.000, 0.3, 400.0, 293.15)));
     
-    k.add(Box::new(ThermalSystem::ea288(m_fuel, t_amb, t_cool, t_oil, visc_mult, 293.15)));
+    k.add(Box::new(ThermalSystem::ea288(q_coolant, q_fric, t_amb, t_cool, t_oil, visc_mult, 293.15)));
 
     k.add(Box::new(Environment::standard(p_amb, t_amb)));
     k.add(Box::new(Turbo::vnt_small_diesel(TurboPorts {
@@ -122,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }, 101_325.0, 293.15)));
 
     k.add(Box::new(ExhaustManifold::new(0.0015, ExhaustPorts {
-        m_air: m_dot_air, m_fuel, t_im, m_turb, p: p_em, t: t_em, eta_ind,
+        m_air: m_dot_air, m_fuel, t_im, m_turb, p: p_em, t: t_em, eta_ind, q_coolant
     }, 101_325.0, 500.0)));
 
     // Hotwire MAF: fast element, but noisy and prone to error during fast flow changes - which is why
@@ -132,7 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
     k.add(Box::new(Engine::new(par, EnginePorts {
-        q_cmd, p_im, t_im, t_load, t_drive, j_ext, visc_mult, omega, theta, m_dot_air, afr, m_fuel, eta_ind,
+        q_cmd, p_im, t_im, t_load, t_drive, j_ext, visc_mult, omega, theta, m_dot_air, afr, m_fuel, eta_ind, q_fric
     }, IDLE_RPM)));
 
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
