@@ -81,5 +81,14 @@ impl Task for SpeedObserver {
         // a usable third opinion, and diag must not arbitrate on it.
         let plausible = (s.crank_valid || s.cam_valid) && (s.n_model - s.n_eng).abs() < 1000.0;
         s.model_valid = plausible;
+
+        // Re-anchor rather than integrate into nonsense. Past the plausibility band the correction
+        // cannot recover the model on its own -- and during a launch transient it is frozen half the
+        // time, so it does not even try. Real ECUs reinitialise a diverged model instead. The bias goes
+        // with it: whatever it learned belongs to the diverged trajectory.
+        if !plausible && (s.crank_valid || s.cam_valid) {
+            s.n_model = s.n_eng;
+            s.t_bias = 0.0;
+        }
     }
 }

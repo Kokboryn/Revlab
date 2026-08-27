@@ -1,0 +1,96 @@
+use revlab_core::SimDuration;
+use crate::{Component, Ctx, Port, Trigger};
+
+#[derive(Copy, Clone)]
+pub struct ClutchPorts {
+    // inputs
+    pub omega_eng: Port,    // crank speed, one tick old
+    pub cmd: Port,          // 0 = fully open, 1 = fully clamped
+    pub t_out: Port,        // reaction from the driveline at the input shaft
+    pub j_ref: Port,        // vehicle inertia reflected onto the input shaft
+    // outputs
+    pub omega_in: Port,     // transmission input shaft
+    pub t_clutch: Port,     // torque on the crank, positive = retarding
+    pub slip: Port,         // rad/s, engine minus input
+    pub q_clutch: Port,     // W, friction power
+}
+
+/// One dry clutch of a dual clutch pack. Owns the input shaft speed, so with the clutch open the engine
+/// and the vehicle are genuinely independent -- the second degree of freedom the rigit driveline could not have.
+///
+/// Lok is a stiff spring damper rather than a solved constraint: the bus is f64 slots, so an iterative
+/// constraint solve across components is not practical. Stiffness is set so residual twist stays under
+/// a degree, which is indistinguishable from locket at this timestep.
+pub struct Clutch {
+    omega_in: f64,          // rad/s
+    theta_rel: f64,         // rad, accumulated twist while gripping
+    pub j_in: f64,          // kg·m², input shaft + gearset, engine side of the diff
+    pub t_cap: f64,         // Nm, torque capacity at full clamp
+    pub k_lock: f64,        // Nm/rad
+    pub c_lock: f64,        // Nm·s/rad
+    ports: ClutchPorts,
+    dt: f64,
+}
+
+impl Clutch {
+    pub const STEP: SimDuration = SimDuration::from_millis(1);
+
+    pub fn dq200_k1(ports: ClutchPorts, omega_in_init: f64) -> Self {
+        Clutch {
+            omega_in: omega_in_init,
+            theta_rel: 0.0,
+            j_in: 0.02,
+            // ~330 Nm, comfortably over the engine's 250 so a healthy clutch never slips once locked.
+            // Fade will erode in this in stage 3b
+            t_cap: 330.0,
+            k_lock: 4000.0,
+            c_lock: 40.0,
+            ports,
+            dt: Self::STEP.as_secs_f64(),
+        }
+    }
+}
+
+impl Component for Clutch {
+    fn triggers(&self) -> Vec<Trigger> {
+        vec![Trigger::Periodic { period: Self::STEP, offset: SimDuration::ZERO }]
+    }
+
+    fn step(&mut self, _trig: u16, ctx: &mut Ctx<'_>) {
+        let omega_eng = ctx.bus.get(self.ports.omega_eng);
+        let cmd = ctx.bus.get(self.ports.cmd).clamp(0.0, 1.0);
+        let t_out = ctx.bus.get(self.ports.t_out);
+        let slip = omega_eng - self.omega_in;
+
+        // Capacity rises with clamp force. Squared because the plate travel closes the gap before
+        // it starts loading: the first half of the pedal does almost nothing, which is what makes a
+        // clutch driveable.
+        let cap = self.t_cap * cmd * cmd;
+
+        // Spring damper first, then decide whether the pack can hold it
+        self.theta_rel += slip * self.dt;
+        let t_stick = self.k_lock * self.theta_rel + self.c_lock * slip;
+
+        let t_c = if t_stick.abs() <= cap {
+            t_stick                                 // gripping
+        } else {
+            // Slipping: Coulomb at capacity, opposing relative motion. Reset the twist so re-grip starts
+            // from zero rather than a wound spring
+            self.theta_rel = 0.0;
+            cap * slip.signum()
+        };
+
+        // In neutral j_ref is 0 and the input shaft carries only its own inertia, so it spins up freely
+        // against the clutch -- correct, nothing is connected.
+        let j_tot = (self.j_in + ctx.bus.get(self.ports.j_ref)).max(1e-4);
+        self.omega_in += (t_c - t_out) / j_tot * self.dt;
+        self.omega_in = self.omega_in.max(0.0);
+
+        ctx.bus.set(self.ports.omega_in, self.omega_in);
+        ctx.bus.set(self.ports.t_clutch, t_c);
+        ctx.bus.set(self.ports.slip, slip);
+        // Friction power. Zero while gripping, kilowatts during a launch -- this is what feeds the
+        // clutch thermal state in the next stage.
+        ctx.bus.set(self.ports.q_clutch, if t_stick.abs() > cap { (t_c * slip).abs() } else { 0.0 });
+    }
+}

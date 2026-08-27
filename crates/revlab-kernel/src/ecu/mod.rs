@@ -99,6 +99,7 @@ pub struct EcuPorts {
     pub t_ind_req: Port,
     pub freeze: Port,
     pub t_bias: Port,
+    pub speed_source: Port,
 }
 
 pub struct Ecu {
@@ -214,5 +215,9 @@ impl Component for Ecu {
         ctx.bus.set(self.p.t_ind_req, self.state.t_ind_req);
         ctx.bus.set(self.p.freeze, if self.state.freeze_adaptation { 1.0 } else { 0.0 });
         ctx.bus.set(self.p.t_bias, self.state.t_bias);
+        ctx.bus.set(self.p.speed_source, match self.state.speed_source {
+            diag::SpeedSource::Crank => 0.0,
+            diag::SpeedSource::Cam => 1.0,
+        });
     }
 }

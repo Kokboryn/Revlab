@@ -12,3 +12,4 @@ pub mod turbo;
 pub mod thermal;
 pub mod road_load;
 pub mod driveline;
+pub mod clutch;

@@ -24,6 +24,7 @@ use revlab_kernel::ecu::driver::DriverDemand;
 use revlab_kernel::ecu::loss::{LossModel, WarmupComp};
 use revlab_kernel::ecu::limits::RevLimiter;
 use revlab_kernel::pacer::Pacer;
+use revlab_kernel::plant::clutch::{Clutch, ClutchPorts};
 use revlab_kernel::plant::intake::IntakePorts;
 use revlab_kernel::plant::thermal::ThermalSystem;
 use revlab_kernel::plant::road_load::{RoadLoad, RoadLoadPar, RoadLoadPorts};
@@ -40,6 +41,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args()?;
     let sc = Scenario::by_name(&args.scenario).ok_or_else(|| format!("unknown scenario '{}'; try --list", args.scenario))?;
     eprintln!("scenario {} - {}", sc.name, sc.about);
+    // Rolling start. The clutch owns the input shaft, so one initial value sets both engine side and
+    // vehicle side conditions consistently.
+    const R_WHEEL: f64 = 0.314;
+    const GEAR_RATIOS: [f64; 7] = [13.633, 7.777, 5.252, 4.011, 3.067, 2.413, 1.957];
+
+    let start_gear = sc.events.iter()
+        .filter_map(|e| match e { Event::Gear { at_s, gear } if *at_s <= 0.0 => Some(*gear as usize), _ => None })
+        .last()
+        .unwrap_or(0);
+
+    let omega_in_init = if start_gear >= 1 && start_gear <= 7 {
+        sc.start_kmh / 3.6 / R_WHEEL * GEAR_RATIOS[start_gear - 1]
+    } else { 0.0 };
 
     let mut k = Kernel::new(args.seed);
 
@@ -90,8 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_bias: Port        = k.bus.alloc(0.0);
     let gear: Port          = k.bus.alloc(0.0);     // 0 = neutral; no scenario shifts yet
     let f_road: Port        = k.bus.alloc(0.0);
-    let t_drive: Port       = k.bus.alloc(0.0);
-    let j_ext: Port         = k.bus.alloc(0.0);
+    let j_ref: Port         = k.bus.alloc(0.0);
     let v_veh: Port         = k.bus.alloc(0.0);
     let n_wheel: Port       = k.bus.alloc(0.0);
     let grade: Port         = k.bus.alloc(0.0);
@@ -100,6 +113,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let eta_ind: Port       = k.bus.alloc(0.40);
     let q_coolant: Port     = k.bus.alloc(0.0);
     let q_fric: Port        = k.bus.alloc(0.0);
+    let speed_source: Port  = k.bus.alloc(0.0);
+    let t_clutch: Port      = k.bus.alloc(0.0);
+    let slip: Port          = k.bus.alloc(0.0);
+    let q_clutch: Port      = k.bus.alloc(0.0);
+    let clutch_cmd: Port    = k.bus.alloc(0.0);
+    let omega_in: Port      = k.bus.alloc(0.0);
+    let t_out: Port         = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -130,11 +150,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Hotwire MAF: fast element, but noisy and prone to error during fast flow changes - which is why
     // real ECUs blend it with speed-density rather than trusting it alone
     k.add(Box::new(AnalogSensor::new(m_dot_maf, m_maf_s, 0.020, 0.4e-3, 0.5, 0.0)));
+    
+    k.add(Box::new(Clutch::dq200_k1(ClutchPorts { omega_eng: omega, cmd: clutch_cmd, t_out, j_ref,
+        omega_in, t_clutch, slip, q_clutch,
+    }, omega_in_init)));
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
-    k.add(Box::new(Engine::new(par, EnginePorts {
-        q_cmd, p_im, t_im, t_load, t_drive, j_ext, visc_mult, omega, theta, m_dot_air, afr, m_fuel, eta_ind, q_fric
+    k.add(Box::new(Engine::new(par, EnginePorts { q_cmd, p_im, t_im, t_load, t_clutch, visc_mult,
+        omega, theta, m_dot_air, afr, m_fuel, eta_ind, q_fric,
     }, IDLE_RPM)));
 
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
@@ -143,15 +167,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut crank = CrankWheel::new(omega, n_meas, crank_valid,);
     let mut cam = CamWheel::new(omega, n_cam, cam_valid,);
     let mut gear_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
+    let mut clutch_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     for e in &sc.events {
         let at = |s: f64| SimTime::ZERO + SimDuration::from_millis((s * 1000.0) as u64);
         match *e {
-            Event::CrankFault { at_s, fault } => crank = crank.arm_fault(at(at_s), fault),
-            Event::CamFault { at_s, fault } => cam = cam.arm_fault(at(at_s), fault),
-            Event::Load { at_s, torque } => load_steps.push((at(at_s), torque)),
-            Event::Speed { at_s, rpm } => speed_steps.push((at(at_s), rpm)),
-            Event::Pedal { at_s, position } => pedal_steps.push((at(at_s), position)),
-            Event::Gear { at_s, gear: g  } => gear_steps.push((at(at_s), g)),
+            Event::CrankFault { at_s, fault }   => crank = crank.arm_fault(at(at_s), fault),
+            Event::CamFault { at_s, fault }     => cam = cam.arm_fault(at(at_s), fault),
+            Event::Load { at_s, torque }         => load_steps.push((at(at_s), torque)),
+            Event::Speed { at_s, rpm }           => speed_steps.push((at(at_s), rpm)),
+            Event::Pedal { at_s, position }      => pedal_steps.push((at(at_s), position)),
+            Event::Gear { at_s, gear: g  }       => gear_steps.push((at(at_s), g)),
+            Event::Clutch {at_s, cmd }           => clutch_steps.push((at(at_s), cmd)),
         }
     }
 
@@ -180,9 +206,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         v_veh, grade, headwind, brake, p_amb, t_amb, f_road,
     })));
     k.add(Box::new(Driveline::dq200_passat(RoadLoadPar::passat_b8_16tdi(), DrivelinePorts {
-        omega, gear, f_road, v_veh, n_wheel, t_drive, j_ext,
+        omega_in, gear, f_road, v_veh, n_wheel, t_out, j_ref,
     })));
-
     k.add(Box::new(
         Ecu::new(EcuPorts {
             n_crank: n_meas,
@@ -205,6 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             t_ect_c: t_cool_s,
             freeze,
             t_bias,
+            speed_source
         }, 6.0)
             .task(Rate::Ms10, Box::new(WarmupComp::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
@@ -253,15 +279,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("v_veh".into(), v_veh),
              ("n_wheel".into(), n_wheel),
              ("f_road".into(), f_road),
-             ("t_drive".into(), t_drive),
-             ("j_ext".into(), j_ext),
-             ("eta_ind".into(), eta_ind),],
+             ("eta_ind".into(), eta_ind),
+             ("speed_source".into(), speed_source),
+             ("t_out".into(), t_out),
+             ("j_ref".into(), j_ref),
+             ("omega_in".into(), omega_in),
+             ("slip".into(), slip),
+             ("t_clutch".into(), t_clutch),
+             ("q_clutch".into(), q_clutch),
+             ("clutch_cmd".into(), clutch_cmd),],
         SimDuration::from_millis(10),
     )?));
     
     // Last on purpose: inserting a component earlier shifts every later component's index, which reorders
     // same timestamp RNG draws and changes the noise realization in every scenario.
     k.add(Box::new(LoadProfile::new(gear_steps, gear)));
+    k.add(Box::new(LoadProfile::new(clutch_steps, clutch_cmd)
+        .ramped(SimDuration::from_millis(1500))));
 
     let end = SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000);
     let chunk = SimDuration::from_millis(if args.live { 100 } else { 1000 });
