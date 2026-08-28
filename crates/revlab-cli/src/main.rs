@@ -121,6 +121,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let omega_in: Port      = k.bus.alloc(0.0);
     let t_out: Port         = k.bus.alloc(0.0);
     let t_disc: Port        = k.bus.alloc(293.15);
+    let wear_um: Port     = k.bus.alloc(0.0);
+    let glaze: Port         = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -153,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(AnalogSensor::new(m_dot_maf, m_maf_s, 0.020, 0.4e-3, 0.5, 0.0)));
     
     k.add(Box::new(Clutch::dq200_k1(ClutchPorts { omega_eng: omega, cmd: clutch_cmd, t_out, j_ref,
-        omega_in, t_clutch, slip, q_clutch, v_veh, t_disc, t_amb
+        omega_in, t_clutch, slip, q_clutch, v_veh, t_disc, t_amb, wear_um, glaze
     }, omega_in_init, 293.15)));
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
@@ -293,7 +295,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("t_clutch".into(), t_clutch),
              ("q_clutch".into(), q_clutch),
              ("clutch_cmd".into(), clutch_cmd),
-             ("t_disc".into(), t_disc),],
+             ("t_disc".into(), t_disc),
+             ("wear_um".into(), wear_um),
+             ("glaze".into(), glaze),],
         SimDuration::from_millis(10),
     )?));
     
