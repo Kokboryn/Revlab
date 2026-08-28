@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clutch_cmd: Port    = k.bus.alloc(0.0);
     let omega_in: Port      = k.bus.alloc(0.0);
     let t_out: Port         = k.bus.alloc(0.0);
+    let t_disc: Port        = k.bus.alloc(293.15);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -152,8 +153,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(AnalogSensor::new(m_dot_maf, m_maf_s, 0.020, 0.4e-3, 0.5, 0.0)));
     
     k.add(Box::new(Clutch::dq200_k1(ClutchPorts { omega_eng: omega, cmd: clutch_cmd, t_out, j_ref,
-        omega_in, t_clutch, slip, q_clutch,
-    }, omega_in_init)));
+        omega_in, t_clutch, slip, q_clutch, v_veh, t_disc, t_amb
+    }, omega_in_init, 293.15)));
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
@@ -168,6 +169,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cam = CamWheel::new(omega, n_cam, cam_valid,);
     let mut gear_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     let mut clutch_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
+    let mut grade_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
+    let mut brake_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     for e in &sc.events {
         let at = |s: f64| SimTime::ZERO + SimDuration::from_millis((s * 1000.0) as u64);
         match *e {
@@ -178,6 +181,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::Pedal { at_s, position }      => pedal_steps.push((at(at_s), position)),
             Event::Gear { at_s, gear: g  }       => gear_steps.push((at(at_s), g)),
             Event::Clutch {at_s, cmd }           => clutch_steps.push((at(at_s), cmd)),
+            Event::Grade { at_s, rad }           => grade_steps.push((at(at_s), rad)),
+            Event::Brake { at_s, cmd }           => brake_steps.push((at(at_s), cmd)),
         }
     }
 
@@ -287,7 +292,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("slip".into(), slip),
              ("t_clutch".into(), t_clutch),
              ("q_clutch".into(), q_clutch),
-             ("clutch_cmd".into(), clutch_cmd),],
+             ("clutch_cmd".into(), clutch_cmd),
+             ("t_disc".into(), t_disc),],
         SimDuration::from_millis(10),
     )?));
     
@@ -296,6 +302,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(LoadProfile::new(gear_steps, gear)));
     k.add(Box::new(LoadProfile::new(clutch_steps, clutch_cmd)
         .ramped(SimDuration::from_millis(1500))));
+    k.add(Box::new(LoadProfile::new(grade_steps, grade)));
+    k.add(Box::new(LoadProfile::new(brake_steps, brake)));
 
     let end = SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000);
     let chunk = SimDuration::from_millis(if args.live { 100 } else { 1000 });

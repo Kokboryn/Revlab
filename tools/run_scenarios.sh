@@ -5,14 +5,14 @@ set -euo pipefail
 
 SEED=${SEED:-42}
 OUT=${OUT:-runs}
-SCENARIOS=(nominal cam_drift crank_drift crank_open crank_stuck load_step spool pedal_ramp pedal_full drive_away)
+SCENARIOS=(nominal cam_drift crank_drift crank_open crank_stuck load_step spool pedal_ramp pedal_full drive_away launch hill_hold)
 
 mkdir -p "$OUT"
 cargo build --release
 
 for s in "${SCENARIOS[@]}"; do
   echo "=== $s"
-  cargo run --release --quiet -- --scenario "$s" --seed "$SEED" --out "$OUT/$s.csv" 2>/dev/null
+  cargo run --release --quiet -- --scenario "$s" --seed "$SEED" --out "$OUT/$s.csv" 2>/dev/null --plot
   cargo run --release --quiet -- --scenario "$s" --seed "$SEED" --out "$OUT/.$s.replay" 2>/dev/null
   if cmp -s "$OUT/$s.csv" "$OUT/.$s.replay"; then
     echo " replay OK"
