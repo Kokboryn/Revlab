@@ -55,7 +55,8 @@ pub struct Clutch {
 impl Clutch {
     pub const STEP: SimDuration = SimDuration::from_millis(1);
 
-    pub fn dq200_k1(ports: ClutchPorts, omega_in_init: f64, t_amb_init: f64) -> Self {
+    pub fn dq200_k1(ports: ClutchPorts, omega_in_init: f64, t_amb_init: f64,
+                    wear_um_init: f64, glaze_init: f64) -> Self {
         Clutch {
             omega_in: omega_in_init,
             theta_rel: 0.0,
@@ -77,9 +78,9 @@ impl Clutch {
             // ~150,000 km of normal use is a millimetre or so of lining, against a few hundred MJ of
             // cumulative slip. Numbers to be tuned once the first long run shows what actually accumulates.
             thickness0: 3.5e-3,
-            thickness: 3.5e-3,
+            thickness: 3.5e-3 - wear_um_init * 1e-6,
             travel: 8.0e-3,
-            glaze: 0.0,
+            glaze: glaze_init,
             // Fitted to service life rather than to any single run: a dry pack loses roughly 1 mm
             // of lining over ~150,000 km, which is about 3 GJ of cumulative slip energy -- 75,000
             // launches at ~25 kJ plus the shifts between them. At the 100 C reference; the temperature

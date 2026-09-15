@@ -1,5 +1,6 @@
 mod scenario;
 mod keyboard;
+mod wear;
 
 use std::f64::consts::PI;
 use revlab_core::{SimDuration, SimTime};
@@ -40,6 +41,7 @@ const IDLE_RPM: f64 = 800.0;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args()?;
     let sc = Scenario::by_name(&args.scenario).ok_or_else(|| format!("unknown scenario '{}'; try --list", args.scenario))?;
+    let wear = match &args.wear { Some(p) => wear::Wear::load(p)?, None => wear::Wear::default(), };
     eprintln!("scenario {} - {}", sc.name, sc.about);
     // Rolling start. The clutch owns the input shaft, so one initial value sets both engine side and
     // vehicle side conditions consistently.
@@ -156,7 +158,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     k.add(Box::new(Clutch::dq200_k1(ClutchPorts { omega_eng: omega, cmd: clutch_cmd, t_out, j_ref,
         omega_in, t_clutch, slip, q_clutch, v_veh, t_disc, t_amb, wear_um, glaze
-    }, omega_in_init, 293.15)));
+    }, omega_in_init, 293.15,
+        wear.get("clutch.k1.wear_um", 0.0),
+        wear.get("clutch.k1.glaze", 0.0),
+    )));
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
@@ -335,6 +340,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     eprintln!();
+
+    if let Some(p) = &args.wear {
+        let mut w = wear.clone();
+        w.set("clutch.k1.wear_um", k.bus.get(wear_um));
+        w.set("clutch.k1.glaze", k.bus.get(glaze));
+        w.save(p)?;
+        eprintln!("wear saved -> {p}");
+    }
 
     drop(k);
     eprintln!("done, {} s simulated -> {}", sc.duration_s, args.out);
