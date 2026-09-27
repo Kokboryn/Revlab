@@ -6,6 +6,7 @@ use revlab_core::{SimTime, SimDuration, SimRng};
 pub mod plant;
 pub mod sensors;
 pub mod ecu;
+pub mod tcu;
 
 pub mod telemetry;
 pub mod pacer;

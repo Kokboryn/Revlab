@@ -30,6 +30,9 @@ use revlab_kernel::plant::intake::IntakePorts;
 use revlab_kernel::plant::thermal::ThermalSystem;
 use revlab_kernel::plant::road_load::{RoadLoad, RoadLoadPar, RoadLoadPorts};
 use revlab_kernel::plant::driveline::{Driveline, DrivelinePorts};
+use revlab_kernel::tcu::clutch_ctl::ClutchControl;
+use revlab_kernel::tcu::diag::ClutchThermal;
+use revlab_kernel::tcu::{self, Tcu, TcuPorts, Lever};
 
 struct RawGuard;
 impl Drop for RawGuard {
@@ -48,10 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     const R_WHEEL: f64 = 0.314;
     const GEAR_RATIOS: [f64; 7] = [13.633, 7.777, 5.252, 4.011, 3.067, 2.413, 1.957];
 
-    let start_gear = sc.events.iter()
-        .filter_map(|e| match e { Event::Gear { at_s, gear } if *at_s <= 0.0 => Some(*gear as usize), _ => None })
-        .last()
-        .unwrap_or(0);
+    let start_gear = sc.start_gear;
 
     let omega_in_init = if start_gear >= 1 && start_gear <= 7 {
         sc.start_kmh / 3.6 / R_WHEEL * GEAR_RATIOS[start_gear - 1]
@@ -123,8 +123,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let omega_in: Port      = k.bus.alloc(0.0);
     let t_out: Port         = k.bus.alloc(0.0);
     let t_disc: Port        = k.bus.alloc(293.15);
-    let wear_um: Port     = k.bus.alloc(0.0);
+    let wear_um: Port       = k.bus.alloc(0.0);
     let glaze: Port         = k.bus.alloc(0.0);
+    let lever: Port         = k.bus.alloc(2.0);     // 2 = Neutral
+    let clutch_state: Port  = k.bus.alloc(0.0);     // 0 open, 1 engaging, 2 closed
+    let t_disc_est: Port    = k.bus.alloc(293.15);  // The TCU's own estimate, not the plant's
+    let overheat: Port      = k.bus.alloc(0.0);
+    let n_in_s: Port        = k.bus.alloc(0.0);     // input shaft speed sensor
+    let n_wheel_s: Port     = k.bus.alloc(0.0);     // ABS ring, road speed
+    let n_in_rpm: Port      = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -157,7 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(AnalogSensor::new(m_dot_maf, m_maf_s, 0.020, 0.4e-3, 0.5, 0.0)));
     
     k.add(Box::new(Clutch::dq200_k1(ClutchPorts { omega_eng: omega, cmd: clutch_cmd, t_out, j_ref,
-        omega_in, t_clutch, slip, q_clutch, v_veh, t_disc, t_amb, wear_um, glaze
+        omega_in, t_clutch, slip, q_clutch, v_veh, t_disc, t_amb, wear_um, glaze, n_in_rpm
     }, omega_in_init, 293.15,
         wear.get("clutch.k1.wear_um", 0.0),
         wear.get("clutch.k1.glaze", 0.0),
@@ -174,8 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pedal_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     let mut crank = CrankWheel::new(omega, n_meas, crank_valid,);
     let mut cam = CamWheel::new(omega, n_cam, cam_valid,);
-    let mut gear_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
-    let mut clutch_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
+    let mut lever_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 2.0)];
     let mut grade_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     let mut brake_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     for e in &sc.events {
@@ -186,8 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::Load { at_s, torque }         => load_steps.push((at(at_s), torque)),
             Event::Speed { at_s, rpm }           => speed_steps.push((at(at_s), rpm)),
             Event::Pedal { at_s, position }      => pedal_steps.push((at(at_s), position)),
-            Event::Gear { at_s, gear: g  }       => gear_steps.push((at(at_s), g)),
-            Event::Clutch {at_s, cmd }           => clutch_steps.push((at(at_s), cmd)),
+            Event::Lever { at_s, lever  }      => lever_steps.push((at(at_s), match lever { Lever::Park => 0.0, Lever::Reverse => 1.0, Lever::Neutral => 2.0, Lever::Drive => 3.0, })),
             Event::Grade { at_s, rad }           => grade_steps.push((at(at_s), rad)),
             Event::Brake { at_s, cmd }           => brake_steps.push((at(at_s), cmd)),
         }
@@ -214,12 +219,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(AnalogSensor::new(p_im, p_im_s, 0.005, 300.0, 300_000.0, 101_325.0)));
     k.add(Box::new(AnalogSensor::new(t_im, t_im_s, 0.500, 0.5, 400.0, 293.15)));
 
+    // The TCU reads shaft and road speed through sensors like everything else -- no clutch temperature
+    // sensor exists on a DQ200, which is why the thermal protection runs on a model instead
+    k.add(Box::new(AnalogSensor::new(n_in_rpm, n_in_s, 0.010, 2.0, 8000.0, 0.0)));
+    k.add(Box::new(AnalogSensor::new(n_wheel, n_wheel_s, 0.020, 1.0, 2000.0, 0.0)));
+
     k.add(Box::new(RoadLoad::new(RoadLoadPar::passat_b8_16tdi(), RoadLoadPorts {
         v_veh, grade, headwind, brake, p_amb, t_amb, f_road,
     })));
     k.add(Box::new(Driveline::dq200_passat(RoadLoadPar::passat_b8_16tdi(), DrivelinePorts {
         omega_in, gear, f_road, v_veh, n_wheel, t_out, j_ref,
     })));
+
+    k.add(Box::new(
+        Tcu::new(TcuPorts {
+            lever, n_eng: n_meas, n_in: n_in_s, v_veh: n_wheel_s, pedal, brake, clutch_cmd, gear,
+            clutch_state, t_disc_est, overheat,
+        }, sc.start_gear)
+            .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
+            .task(tcu::Rate::Ms100, Box::new(ClutchThermal::dq200()))
+    ));
     k.add(Box::new(
         Ecu::new(EcuPorts {
             n_crank: n_meas,
@@ -302,17 +321,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("clutch_cmd".into(), clutch_cmd),
              ("t_disc".into(), t_disc),
              ("wear_um".into(), wear_um),
-             ("glaze".into(), glaze),],
+             ("glaze".into(), glaze),
+             ("lever".into(), lever),
+             ("clutch_state".into(), clutch_state),
+             ("t_disc_est".into(), t_disc_est),
+             ("overheat".into(), overheat),
+             ("n_in_s".into(), n_in_s),],
         SimDuration::from_millis(10),
     )?));
-    
-    // Last on purpose: inserting a component earlier shifts every later component's index, which reorders
-    // same timestamp RNG draws and changes the noise realization in every scenario.
-    k.add(Box::new(LoadProfile::new(gear_steps, gear)));
-    k.add(Box::new(LoadProfile::new(clutch_steps, clutch_cmd)
-        .ramped(SimDuration::from_millis(1500))));
+
     k.add(Box::new(LoadProfile::new(grade_steps, grade)));
     k.add(Box::new(LoadProfile::new(brake_steps, brake)));
+    k.add(Box::new(LoadProfile::new(lever_steps, lever)));
 
     let end = SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000);
     let chunk = SimDuration::from_millis(if args.live { 100 } else { 1000 });

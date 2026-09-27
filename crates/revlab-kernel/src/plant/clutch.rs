@@ -1,5 +1,6 @@
 use revlab_core::SimDuration;
 use crate::{Component, Ctx, Port, Trigger};
+use std::f64::consts::PI;
 
 #[derive(Copy, Clone)]
 pub struct ClutchPorts {
@@ -18,6 +19,7 @@ pub struct ClutchPorts {
     pub t_disc: Port,
     pub glaze: Port,        // 0..1, permanent mu loss
     pub wear_um: Port,      // µm of lining consumed, cumulative
+    pub n_in_rpm: Port,     // rpm, what the input shaft speed sensor reads
 }
 
 /// One dry clutch of a dual clutch pack. Owns the input shaft speed, so with the clutch open the engine
@@ -172,5 +174,6 @@ impl Component for Clutch {
         ctx.bus.set(self.ports.q_clutch, q_in);
         ctx.bus.set(self.ports.wear_um, (self.thickness0 - self.thickness) * 1e6);
         ctx.bus.set(self.ports.glaze, self.glaze);
+        ctx.bus.set(self.ports.n_in_rpm, self.omega_in * 60.0 / (2.0 * PI));
     }
 }
