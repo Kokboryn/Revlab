@@ -44,6 +44,13 @@ const IDLE_RPM: f64 = 800.0;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args()?;
     let sc = Scenario::by_name(&args.scenario).ok_or_else(|| format!("unknown scenario '{}'; try --list", args.scenario))?;
+    // Every run gets its own folder so the CSV and its plots stay together, and a different seed does
+    // not overwrite the last one
+    let out = args.out.clone()
+        .unwrap_or_else(|| format!("runs/{}_s{}/run.csv", sc.name, args.seed));
+    if let Some(dir) = std::path::Path::new(&out).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     let wear = match &args.wear { Some(p) => wear::Wear::load(p)?, None => wear::Wear::default(), };
     eprintln!("scenario {} - {}", sc.name, sc.about);
     // Rolling start. The clutch owns the input shaft, so one initial value sets both engine side and
@@ -277,7 +284,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .task(Rate::Ms10, Box::new(TorqueToFuel::di_diesel(4.0)))
     ));
     k.add(Box::new(CsvLogger::new(
-        &args.out,
+        &out,
         vec![("omega".into(), omega),
              ("n_crank".into(), n_meas),
              ("n_cam".into(), n_cam),
@@ -370,13 +377,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     drop(k);
-    eprintln!("done, {} s simulated -> {}", sc.duration_s, args.out);
+    eprintln!("done, {} s simulated -> {}", sc.duration_s, out);
 
 
     if args.plot {
         let title = format!("Revlab - {} (seed {})", sc.name, args.seed);
         match std::process::Command::new("python")
-            .args(["tools/plot.py", &args.out, "--title", &title])
+            .args(["tools/plot.py", &out, "--title", &title])
             .status()
         {
             Ok(s) if s.success() => {}

@@ -1,6 +1,8 @@
 # Revlab
 
-Deterministic multi-rate simulation framework for internal-combustion vehicles, written in Rust. Physically modeled engine, powertrain and sensors driving a realistic ECU over a simulated signal boundary, with bit-exact replay for regression testing. Currently: turbo diesel.
+Deterministic multi-rate simulation framework for internal-combustion vehicles, written in Rust. Physically modeled engine,
+powertrain and sensors driving a realistic ECU and TCU over a simulated signal boundary, with bit-exact replay for regression
+testing. Currently: turbo diesel with a dry dual-clutch gearbox. Currently: turbo diesel.
 
 The reference vehicle is a 2017 VW Passat B8 with the EA288 1.6 TDI and a DQ200 seven-speed dual-clutch gearbox.
 
@@ -11,8 +13,11 @@ The reference vehicle is a 2017 VW Passat B8 with the EA288 1.6 TDI and a DQ200 
 The ECU only ever sees what a sensor line would carry — quantized, noisy, delayed, and occasionally lying. It has no access to plant state. That single constraint is what the whole architecture is built around, and it's what makes the interesting failures reproducible:
 
 - A drifting crank sensor can stall the engine while the ECU reports a perfect 800 rpm
-- The ECU can be wrong about its own friction and still idle flawlessly, because the integrator quietly absorbs the model error — until the error moves, and then the error is visible in the arbitrated torque
+- The ECU can be wrong about its own friction and still idle flawlessly, because the integrator quietly absorbs the model 
+error — until the error moves, and then the error is visible in the arbitrated torque
 - A plausibility monitor with only two signals can detect that something is wrong but cannot tell you *which* sensor is lying
+- The TCU has no clutch temperature sensor, so it protects the clutch from its own thermal estimate built on its own guessed 
+constants — and because it cannot tell gripping from slipping, it consistently over-reads the real disc
 
 None of those are scripted. They fall out of the separation.
 
@@ -27,12 +32,14 @@ revlab/
 │    ├── revlab-core/       time base, seeded PRNG, interpolated maps
 │    └── revlab-kernel/     scheduler, plant, sensors, ECU, telemetry
 └── tools/
-     ├── plot.py            telemetry plotting
-     ├── run_scenarios.sh   full validation sweep
-     └── check_run.py       per-run health metrics
+│    ├── plot.py            telemetry plotting
+│    ├── run_scenarios.sh   full validation sweep
+│    └── check_run.py       per-run health metrics
+└── runs/                   <scenario>_s<seed>/ - CSV and plots, gitignored
 ```
 
-`revlab-kernel` is internally split into `plant/`, `sensors/`, and `ecu/`. Nothing under `ecu/` imports from `plant/` — that becomes a crate boundary later so the compiler enforces it.
+`revlab-kernel` is internally split into `plant/`, `sensors/`, and `ecu/`. Nothing under `ecu/` or `tcu/` imports from `plant/`,
+and neither controller can see the other's RAM
 
 ---
 
@@ -53,19 +60,19 @@ One consequence worth knowing: each component's PRNG is derived from its registr
 
 ### Plant
 
-|              |                                                                                                                               |
-|--------------|-------------------------------------------------------------------------------------------------------------------------------|
-| Engine       | mean-value crank dynamics, indicated torque from an efficiency map over (speed, load)                                         |
-| Friction     | Chen-Flynn correlation — physical form, coefficients fitted per engine family, scaled by oil viscosity                        |
-| Geometry     | measured inputs (bore, stroke, conrod, flywheel) resolving to derived inertia and displacement                                |
-| Intake       | filling-and-emptying manifold, sub-stepped for stiffness                                                                      |
-| Exhaust      | manifold with a temperature state, driven by the share of fuel energy that became neither work nor in-cylinder heat rejection |
-| Turbo        | compressor, turbine and shaft as one device; ellipse compressor map, VNT vane area, shaft inertia                             |
-| Thermal      | coolant/block and oil as separate masses, thermostat-gated radiator, oil cooler, friction heat split between the two          |
-| Clutch       | one dry pack of a dual-clutch gearbox, owning the transmission input shaft — open, slipping and locked                        |
-| Driveline    | measured DQ200 ratios, vehicle inertia reflected onto the input shaft                                                         |
-| Road load    | aero, rolling, grade and brake force from physical parameters rather than a coastdown polynomial                              |
-| Environment  | ambient pressure and temperature as a component — altitude, weather and headwind can vary at runtime                          |
+|              |                                                                                                                                                                                                                     |
+|--------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Engine       | mean-value crank dynamics, indicated torque from an efficiency map over (speed, load)                                                                                                                               |
+| Friction     | Chen-Flynn correlation — physical form, coefficients fitted per engine family, scaled by oil viscosity                                                                                                              |
+| Geometry     | measured inputs (bore, stroke, conrod, flywheel) resolving to derived inertia and displacement                                                                                                                      |
+| Intake       | filling-and-emptying manifold, sub-stepped for stiffness                                                                                                                                                            |
+| Exhaust      | manifold with a temperature state, driven by the share of fuel energy that became neither work nor in-cylinder heat rejection                                                                                       |
+| Turbo        | compressor, turbine and shaft as one device; ellipse compressor map, VNT vane area, shaft inertia                                                                                                                   |
+| Thermal      | coolant/block and oil as separate masses, thermostat-gated radiator, oil cooler, friction heat split between the two                                                                                                |
+| Clutch       | one dry pack owning the input shaft — open, slipping and locked; disc temperature with speed-dependent cooling, reversible friction fade, permanent glazing above 300 °C, and lining wear that moves the bite point |
+| Driveline    | measured DQ200 ratios, vehicle inertia reflected onto the input shaft                                                                                                                                               |
+| Road load    | aero, rolling, grade and brake force from physical parameters rather than a coastdown polynomial                                                                                                                    |
+| Environment  | ambient pressure and temperature as a component — altitude, weather and headwind can vary at runtime                                                                                                                |
 
 ### Sensors
 
@@ -85,6 +92,16 @@ One component with an internal task table at 1/10/100 ms sharing a single RAM im
 - **Dynamic tolerance.** The cam's disagreement during a transient is predictable from its lag, so the threshold widens by exactly the error that lag accounts for — barely at all for a slow drift, hugely for a hard load step.
 - **Smoke limiter** capping fuel at the air actually available, estimated by the ECU from MAP and IAT with its own volumetric efficiency calibration, blended against the MAF signal.
 
+### TCU
+
+Same structure as the ECU — a task table over one RAM image, ports only. On a DQ200 the control unit and the actuator are one mechatronic assembly, so the actuator's slew rate lives inside it: releasing clamp is a valve opening and runs five times faster than building it.
+
+- **Engagement targets engine speed, not clutch position.** The controller holds the engine at a launch speed that rises with pedal, and the clutch takes whatever torque keeps it there. A launch is smooth regardless of load or gradient.
+- **Creep.** In D with the brake released, the clutch sits at its touch point, so the car crawls on the flat and rolls back slowly on a hill rather than freewheeling.
+- **Engine guard**, applied last so no other logic can override it — the same rule as the ECU's torque arbiter.
+- **Thermal protection** from a modeled disc temperature, opening the clutch above its limit with hysteresis.
+- The driver selects P/R/N/D; the TCU decides engagement and owns the gear.
+- 
 ---
 
 ## Running it
@@ -92,7 +109,8 @@ One component with an internal task table at 1/10/100 ms sharing a single RAM im
 ```bash
 cargo run -p revlab-cli -- --list
 cargo run -p revlab-cli -- --scenario launch --seed 42 --plot
-./tools/run_scenarios.sh          # full sweep, replay check, health metrics
+cargo run -p revlab-cli -- --scenario hill_start --seed 42 --wear car.wear   # carry damage between runs
+./tools/run_scenarios.sh
 ```
 
 A run is fully described by `(scenario, seed)`. Flags: `--scenario --seed --out --plot --live --realtime --speed`.
@@ -109,7 +127,8 @@ A run is fully described by `(scenario, seed)`. Flags: `--scenario --seed --out 
 | `pedal_ramp`   | pedal to 40% at t=5 s, released at t=12 s                     |
 | `pedal_full`   | pedal to 100%, no load — watch the rev limit                  |
 | `drive_away`   | rolling start at 23.6 km/h in 4th, pedal to 50% at t=5 s      |
-| `launch`       | 1st gear from rest, clutch ramped in over 1.5 s               |
+| `launch`       | select D, pedal to 40% — the TCU handles engagement           |
+| `hill_start`   | pull away on a 10% grade from the brake                       |
 
 Plotting needs `matplotlib`.
 
@@ -126,6 +145,8 @@ Numbers that fall out of the model rather than being tuned to match:
 - `spool`: turbo 19,547 → 88,496 rpm, AFR floored at 17.8 by the smoke limiter, fuel held at the limit for 63% of the transient and released as boost arrives
 - `drive_away`: 2400 rpm gives **70.82 km/h** in 4th, against 70 km/h read off the car's own dash
 - `launch`: one clutch engagement puts **39.5 kJ** into the friction surfaces, peaking at 57 kW
+- `hill_start`: the TCU pulls away on a 10% grade, bottoming the engine at 485 rpm and locking up at 4.2 s; 18.2 kJ into the clutch, peak disc 38 °C
+- clutch wear is fitted to service life rather than to any run: roughly 1 mm of lining per ~3 GJ of slip energy, which is ~150,000 km of mixed driving
 
 The gear ratios are measured from the vehicle, so the 70.82 is a check against reality rather than against the model. Everything else in the list is the model agreeing with itself.
 
@@ -133,7 +154,7 @@ The gear ratios are measured from the vehicle, so the 70.82 is a check against r
 
 ## Not yet
 
-Boost and EGR control (VNT is currently pinned open); the second clutch, shift logic and a TCU; aftertreatment; wear and clutch fade. An open crank circuit is not diagnosed — a missing signal is a continuity fault rather than a correlation one, and that monitor doesn't exist yet.
+The second clutch, shift scheduling and the overlapping handover between them; the CAN torque interface between TCU and ECU; boost and EGR control (VNT is currently pinned open); aftertreatment. An open crank circuit is not diagnosed — a missing signal is a continuity fault rather than a correlation one, and that monitor doesn't exist yet.
 
 ---
 

@@ -34,8 +34,8 @@ pub const NAMES: &[(&str, &str)] = &[
     ("spool", "2500 rpm + 80 Nm at t=5s - turbo spools"),
     ("pedal_ramp", "pedal to 40% at t=5s, released at t=12s"),
     ("pedal_full", "pedal to 100% at t=5s, no load- watch the rev limit"),
-    ("drive_away", "4th engaged at t=2s from idle (~24 km/h), pedal to 50% at t=5s"),
-    ("launch", "1st gear, clutch ramped 0->1 over 2s from t=2, pedal 40% at t=2.5"),
+    ("drive_away", "rolling start at 23.6 km/h in 4th, pedal to 50% at t=5s"),
+    ("launch", "select D at t=2s, pedal to 40% - TCU handles engagement"),
     ("hill_start", "10% grade, pull away from rest under TCU control"),
 ];
 
@@ -53,7 +53,7 @@ impl Scenario {
             "pedal_full"    => (60, 0.0, 0, vec![Event::Pedal { at_s: 10.0, position: 1.0 }]),
             "drive_away"    => (30, 23.6, 4, vec![Event::Lever { at_s: 0.0, lever: Lever::Drive }, Event::Pedal { at_s: 5.0, position: 0.50 }]),
             "launch"        => (30, 0.0, 1, vec![Event::Lever { at_s: 2.0, lever: Lever::Drive}, Event::Pedal { at_s: 2.5, position: 0.40 }]),
-            "hill_hold"     => (180, 0.0, 1, vec![
+            "hill_start"     => (180, 0.0, 1, vec![
                 Event::Grade { at_s: 0.0, rad: 0.0997 },    // 10%
                 Event::Brake { at_s: 0.0, cmd: 0.30 },      // held on the brake first
                 Event::Lever { at_s: 2.0, lever: Lever::Drive },
@@ -70,15 +70,15 @@ impl Scenario {
 pub struct Args {
     pub scenario: String,
     pub seed: u64,
-    pub out: String,
     pub plot: bool,
     pub speed: Option<f64>,     // None = as fast as possible
     pub live: bool,
     pub wear: Option<String>,
+    pub out: Option<String>,    // None = runs/<scenario>_s<seed>/run.csv
 }
 
 pub fn parse_args() -> Result<Args, String> {
-    let mut a = Args { scenario: "crank_drift".into(), seed: 0xC0FFEE, out: "run.csv".into(), plot: false, speed: None, live: false, wear: None };
+    let mut a = Args { scenario: "crank_drift".into(), seed: 0xC0FFEE, out: None, plot: false, speed: None, live: false, wear: None };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         match k.as_str() {
@@ -88,7 +88,7 @@ pub fn parse_args() -> Result<Args, String> {
             }
             "--scenario" => a.scenario = it.next().ok_or("--scenario needs a value")?,
             "--seed" => a.seed = it.next().ok_or("--seed needs a value")?.parse().map_err(|_| "--seed must be an integer")?,
-            "--out" => a.out = it.next().ok_or("--out needs a value")?,
+            "--out" => a.out = Some(it.next().ok_or("--out needs a value")?),
             "--plot" => a.plot = true,
             "--realtime" => a.speed = Some(1.0),
             "--speed" => a.speed = Some(it.next().ok_or("--speed needs a value")?.parse().map_err(|_| "--speed must be a number")?,),
