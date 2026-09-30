@@ -141,6 +141,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_in2: Port         = k.bus.alloc(0.0);
     let n_in1_s: Port       = k.bus.alloc(0.0); // rpm, sensor
     let n_in2_s: Port       = k.bus.alloc(0.0);
+    let eng1: Port          = k.bus.alloc(0.0);
+    let eng2: Port          = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -239,8 +241,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         v_veh, grade, headwind, brake, p_amb, t_amb, f_road,
     })));
     k.add(Box::new(Gearbox::dq200_passat(RoadLoadPar::passat_b8_16tdi(), GearboxPorts {
-        t_c1, t_c2, sel1, sel2, f_road, omega_in1, omega_in2, n_in1, n_in2, v_veh, n_wheel
-    }, sc.start_kmh)));
+        t_c1, t_c2, sel1, sel2, f_road, omega_in1, omega_in2, n_in1, n_in2, eng1, eng2, v_veh, n_wheel
+    }, sc.start_kmh, sc.start_gear)));
 
     k.add(Box::new(
         Tcu::new(TcuPorts {
@@ -341,6 +343,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("glaze2".into(), glaze2),
              ("n_in1".into(), n_in1),
              ("n_in2".into(), n_in2),
+             ("eng1".into(), eng1),
+             ("eng2".into(), eng2),
              ("clutch_cmd".into(), clutch_cmd),
              ("lever".into(), lever),
              ("clutch_state".into(), clutch_state),

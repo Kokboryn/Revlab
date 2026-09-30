@@ -163,8 +163,17 @@ impl Component for Tcu {
         let odd = g % 2 == 1;
 
         // --- output drivers
-        ctx.bus.set(self.p.sel1, if odd { g as f64 } else { 0.0 });
-        ctx.bus.set(self.p.sel2, if !odd && g > 0 { g as f64 } else { 0.0 });
+
+        // Preselect the next gear up on the idle shaft; 7th has none, so it holds 6th for the way down.
+        // Interim: the shift sequencer in 2b takes this over and chooses up or down.
+        let (s1, s2) = match g {
+            0 => (0, 0),
+            7 => (7, 6),
+            g if odd => (g, g + 1),
+            g => (g + 1, g),
+        };
+        ctx.bus.set(self.p.sel1, s1 as f64);
+        ctx.bus.set(self.p.sel2, s2 as f64);
         ctx.bus.set(self.p.cmd1, if odd { self.state.clutch_cmd } else { 0.0 });
         ctx.bus.set(self.p.cmd2, if !odd && g > 0 { self.state.clutch_cmd } else { 0.0 });
         ctx.bus.set(self.p.clutch_cmd, self.state.clutch_cmd);
