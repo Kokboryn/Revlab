@@ -62,7 +62,8 @@ pub struct EnginePorts {
     pub p_im: Port,
     pub t_im: Port,
     pub t_load: Port,       // scripted external load, from LoadProfile
-    pub t_clutch: Port,        // vehicle inertia reflected through the gearing
+    pub t_c1: Port,         // K1 reaction, odd gears
+    pub t_c2: Port,         // K2 reaction, even gears
     pub visc_mult: Port,
     // outputs
     pub omega: Port,
@@ -129,13 +130,13 @@ impl Component for Engine {
 
     fn step(&mut self, _trig: u16, ctx: &mut Ctx<'_>) {
         let q = ctx.bus.get(self.ports.q_cmd);
-        let t_load = ctx.bus.get(self.ports.t_load) + ctx.bus.get(self.ports.t_clutch);
+        let t_load = ctx.bus.get(self.ports.t_load) + ctx.bus.get(self.ports.t_c1) + ctx.bus.get(self.ports.t_c2);
         let visc = ctx.bus.get(self.ports.visc_mult).max(1.0);
         let t_net = self.indicated_torque(q) - self.friction_torque() * visc - t_load;
 
-        // The clutch owns the input shaft, so the vehicle is no longer part of this inertia. Engine
-        // speed is its own degree of freedom again -- which is what lets it stall against a closed
-        // clutch, and rev freely against an open one.
+        // The vehicle is not part of this inertia: the gearbox owns it, and the two clutches are the
+        // only path between them. That is what lets the engine stall against a closed clutch and rev
+        // freely against an open one.
         self.omega += t_net / self.p.inertia * self.dt;
         if self.omega < self.p.stall_rad_s {
             self.running = false;

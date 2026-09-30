@@ -5,7 +5,7 @@ set -euo pipefail
 
 SEED=${SEED:-42}
 OUT=${OUT:-runs}
-SCENARIOS=(nominal cam_drift crank_drift crank_open crank_stuck load_step spool pedal_ramp pedal_full drive_away launch hill_hold)
+SCENARIOS=(nominal cam_drift crank_drift crank_open crank_stuck load_step spool pedal_ramp pedal_full drive_away launch hill_start)
 
 mkdir -p "$OUT"
 cargo build --release

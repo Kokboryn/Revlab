@@ -1,38 +1,33 @@
 use revlab_core::SimDuration;
 use crate::{Component, Ctx, Port, Trigger};
-use std::f64::consts::PI;
 
 #[derive(Copy, Clone)]
 pub struct ClutchPorts {
     // inputs
     pub omega_eng: Port,    // crank speed, one tick old
+    pub omega_in: Port,     // input shaft speed, owned by the gearbox
     pub cmd: Port,          // 0 = fully open, 1 = fully clamped
-    pub t_out: Port,        // reaction from the driveline at the input shaft
-    pub j_ref: Port,        // vehicle inertia reflected onto the input shaft
     pub v_veh: Port,
     pub t_amb: Port,
     // outputs
-    pub omega_in: Port,     // transmission input shaft
     pub t_clutch: Port,     // torque on the crank, positive = retarding
     pub slip: Port,         // rad/s, engine minus input
     pub q_clutch: Port,     // W, friction power
     pub t_disc: Port,
     pub glaze: Port,        // 0..1, permanent mu loss
     pub wear_um: Port,      // µm of lining consumed, cumulative
-    pub n_in_rpm: Port,     // rpm, what the input shaft speed sensor reads
 }
 
-/// One dry clutch of a dual clutch pack. Owns the input shaft speed, so with the clutch open the engine
-/// and the vehicle are genuinely independent -- the second degree of freedom the rigid driveline could not have.
+/// One dry clutch of a dual clutch pack: a torque device between the crank and one input shaft. It
+/// owns no speed state -- the gearbox owns the vehicle, and the shaft's speed follows from whatever
+/// gear is selected on it.
 ///
 /// Lock is a stiff spring damper rather than a solved constraint: the bus is f64 slots, so an iterative
 /// constraint solve across components is not practical. Stiffness is set so residual twist stays under
 /// a degree, which is indistinguishable from locked at this timestep.
 pub struct Clutch {
-    omega_in: f64,          // rad/s
     theta_rel: f64,         // rad, accumulated twist while gripping
     t_disc: f64,            // K, lining and pressure plate as one lumped mass
-    pub j_in: f64,          // kg·m², input shaft + gearset, engine side of the diff
     pub t_cap_cold: f64,    // Nm, torque capacity at full clamp with fresh cool lining
     pub c_disc: f64,        // J/K
     pub ua_still: f64,      // W/K, bell housing to ambient at rest
@@ -57,13 +52,11 @@ pub struct Clutch {
 impl Clutch {
     pub const STEP: SimDuration = SimDuration::from_millis(1);
 
-    pub fn dq200_k1(ports: ClutchPorts, omega_in_init: f64, t_amb_init: f64,
+    pub fn dq200(ports: ClutchPorts, t_amb_init: f64,
                     wear_um_init: f64, glaze_init: f64) -> Self {
         Clutch {
-            omega_in: omega_in_init,
             theta_rel: 0.0,
             t_disc: t_amb_init,
-            j_in: 0.02,
             t_cap_cold: 330.0,
             // ~2 kg of lining and pressure plate. One 39.5 kJ launch is a 40 C rise, which is why
             // repeated hill starts are what kills these.
@@ -117,8 +110,8 @@ impl Component for Clutch {
         // position gives less clamp. This is the bite point moving
         let worn = ((self.thickness0 - self.thickness) / self.travel).clamp(0.0, 1.0);
         let cmd = (cmd_raw - worn).clamp(0.0, 1.0);
-        let t_out = ctx.bus.get(self.ports.t_out);
-        let slip = omega_eng - self.omega_in;
+        let omega_in = ctx.bus.get(self.ports.omega_in);
+        let slip = omega_eng - omega_in;
 
         // Capacity rises with clamp force. Squared because the plate travel closes the gap before
         // it starts loading: the first half of the pedal does almost nothing, which is what makes a
@@ -138,17 +131,9 @@ impl Component for Clutch {
             cap * slip.signum()
         };
 
-        // In neutral j_ref is 0 and the input shaft carries only its own inertia, so it spins up freely
-        // against the clutch -- correct, nothing is connected.
-        let j_tot = (self.j_in + ctx.bus.get(self.ports.j_ref)).max(1e-4);
-        self.omega_in += (t_c - t_out) / j_tot * self.dt;
-        // No floor: a clutch that has faded below the grade load lets the car roll back, and that is the
-        // failure this models
-        ctx.bus.set(self.ports.omega_in, self.omega_in);
         ctx.bus.set(self.ports.t_clutch, t_c);
         ctx.bus.set(self.ports.slip, slip);
-        // Friction power. Zero while gripping, kilowatts during a launch -- this is what feeds the
-        // clutch thermal state in the next stage.
+        // Friction power. Zero while gripping, kilowatts during a launch
 
         // Thermal state. Slip power in, forced convection out, scaled by road speed.
         let q_in = if t_stick.abs() > cap { (t_c * slip).abs() } else { 0.0 };
@@ -174,6 +159,5 @@ impl Component for Clutch {
         ctx.bus.set(self.ports.q_clutch, q_in);
         ctx.bus.set(self.ports.wear_um, (self.thickness0 - self.thickness) * 1e6);
         ctx.bus.set(self.ports.glaze, self.glaze);
-        ctx.bus.set(self.ports.n_in_rpm, self.omega_in * 60.0 / (2.0 * PI));
     }
 }

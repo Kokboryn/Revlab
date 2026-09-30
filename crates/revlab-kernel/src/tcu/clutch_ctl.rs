@@ -1,7 +1,7 @@
 /// Engagement control. During a launch the target is a slip *speed*, not a clutch position: hold the
-/// engine a set amount above the input shaft and close the gap as the shaft catches up. That is what
-/// makes a launch smooth regardless of pedal, load or gradient, and it is why a real DSG can pull away
-/// on a hill without the driver balancing anything.
+/// engine at a launch speed set by the pedal and let the clutch take whatever torque keeps it there.
+/// That is what makes a launch smooth regardless of pedal, load or gradient, and it is why a real DSG
+/// can pull away on a hill without the driver balancing anything.
 
 use super::{ClutchState, Lever, Task, TcuState};
 pub struct ClutchControl {

@@ -63,12 +63,18 @@ pub struct TcuPorts {
     // inputs
     pub lever: Port,
     pub n_eng: Port,    // rpm, engine speed (CAN in a real car)
-    pub n_in: Port,     // rpm, input shaft sensor
+    pub n_in1: Port,    // rpm, shaft 1 speed sensor, odd gears
+    pub n_in2: Port,    // rpm, shaft 2 speed sensor, even gears
     pub v_veh: Port,    // rpm, wheel speed sensor
     pub pedal: Port,
     pub brake: Port,
-    // outputs
-    pub clutch_cmd: Port,
+    // outputs: actuators
+    pub sel1: Port,     // gear selected on shaft 1
+    pub sel2: Port,     // gear selected on shaft 2
+    pub cmd1: Port,     // K1 clamp
+    pub cmd2: Port,     // K2 clamp
+    // outputs: status, for telemetry only
+    pub clutch_cmd: Port,   // command to whichever pack carries the engaged gear
     pub gear: Port,
     pub clutch_state: Port,
     pub t_disc_est: Port,
@@ -131,7 +137,12 @@ impl Component for Tcu {
         self.state.now      = ctx.now;
         self.state.lever    = Lever::from_port(ctx.bus.get(self.p.lever));
         self.state.n_eng    = ctx.bus.get(self.p.n_eng);
-        self.state.n_in     = ctx.bus.get(self.p.n_in);
+        // Watch the shaft that carries the engaged gear
+        self.state.n_in     = if self.state.gear % 2 == 1 {
+            ctx.bus.get(self.p.n_in1)
+        } else {
+            ctx.bus.get(self.p.n_in2)
+        };
         self.state.v_veh    = ctx.bus.get(self.p.v_veh);
         self.state.pedal    = ctx.bus.get(self.p.pedal);
         self.state.brake    = ctx.bus.get(self.p.brake);
@@ -141,7 +152,16 @@ impl Component for Tcu {
             if *r == rate { t.run(&mut self.state); }
         }
 
+        // A real TCU knows its gearbox: odd gears on K1, even on K2. The pack that carries the engaged
+        // gear gets the command, the other stays open
+        let g = self.state.gear;
+        let odd = g % 2 == 1;
+
         // --- output drivers
+        ctx.bus.set(self.p.sel1, if odd { g as f64 } else { 0.0 });
+        ctx.bus.set(self.p.sel2, if !odd && g > 0 { g as f64 } else { 0.0 });
+        ctx.bus.set(self.p.cmd1, if odd { self.state.clutch_cmd } else { 0.0 });
+        ctx.bus.set(self.p.cmd2, if !odd && g > 0 { self.state.clutch_cmd } else { 0.0 });
         ctx.bus.set(self.p.clutch_cmd, self.state.clutch_cmd);
         ctx.bus.set(self.p.gear, self.state.gear as f64);
         ctx.bus.set(self.p.clutch_state, match self.state.clutch_state {

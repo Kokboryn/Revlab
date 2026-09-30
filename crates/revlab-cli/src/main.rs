@@ -29,7 +29,7 @@ use revlab_kernel::plant::clutch::{Clutch, ClutchPorts};
 use revlab_kernel::plant::intake::IntakePorts;
 use revlab_kernel::plant::thermal::ThermalSystem;
 use revlab_kernel::plant::road_load::{RoadLoad, RoadLoadPar, RoadLoadPorts};
-use revlab_kernel::plant::driveline::{Driveline, DrivelinePorts};
+use revlab_kernel::plant::gearbox::{Gearbox, GearboxPorts};
 use revlab_kernel::tcu::clutch_ctl::ClutchControl;
 use revlab_kernel::tcu::diag::ClutchThermal;
 use revlab_kernel::tcu::{self, Tcu, TcuPorts, Lever};
@@ -53,16 +53,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let wear = match &args.wear { Some(p) => wear::Wear::load(p)?, None => wear::Wear::default(), };
     eprintln!("scenario {} - {}", sc.name, sc.about);
-    // Rolling start. The clutch owns the input shaft, so one initial value sets both engine side and
-    // vehicle side conditions consistently.
-    const R_WHEEL: f64 = 0.314;
-    const GEAR_RATIOS: [f64; 7] = [13.633, 7.777, 5.252, 4.011, 3.067, 2.413, 1.957];
-
-    let start_gear = sc.start_gear;
-
-    let omega_in_init = if start_gear >= 1 && start_gear <= 7 {
-        sc.start_kmh / 3.6 / R_WHEEL * GEAR_RATIOS[start_gear - 1]
-    } else { 0.0 };
 
     let mut k = Kernel::new(args.seed);
 
@@ -113,7 +103,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_bias: Port        = k.bus.alloc(0.0);
     let gear: Port          = k.bus.alloc(0.0);     // 0 = neutral; no scenario shifts yet
     let f_road: Port        = k.bus.alloc(0.0);
-    let j_ref: Port         = k.bus.alloc(0.0);
     let v_veh: Port         = k.bus.alloc(0.0);
     let n_wheel: Port       = k.bus.alloc(0.0);
     let grade: Port         = k.bus.alloc(0.0);
@@ -123,22 +112,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let q_coolant: Port     = k.bus.alloc(0.0);
     let q_fric: Port        = k.bus.alloc(0.0);
     let speed_source: Port  = k.bus.alloc(0.0);
-    let t_clutch: Port      = k.bus.alloc(0.0);
-    let slip: Port          = k.bus.alloc(0.0);
-    let q_clutch: Port      = k.bus.alloc(0.0);
     let clutch_cmd: Port    = k.bus.alloc(0.0);
-    let omega_in: Port      = k.bus.alloc(0.0);
-    let t_out: Port         = k.bus.alloc(0.0);
-    let t_disc: Port        = k.bus.alloc(293.15);
-    let wear_um: Port       = k.bus.alloc(0.0);
-    let glaze: Port         = k.bus.alloc(0.0);
     let lever: Port         = k.bus.alloc(2.0);     // 2 = Neutral
     let clutch_state: Port  = k.bus.alloc(0.0);     // 0 open, 1 engaging, 2 closed
     let t_disc_est: Port    = k.bus.alloc(293.15);  // The TCU's own estimate, not the plant's
     let overheat: Port      = k.bus.alloc(0.0);
-    let n_in_s: Port        = k.bus.alloc(0.0);     // input shaft speed sensor
     let n_wheel_s: Port     = k.bus.alloc(0.0);     // ABS ring, road speed
-    let n_in_rpm: Port      = k.bus.alloc(0.0);
+    // Two packs, two shafts. Suffix 1 = K1, odd gears; 2 = K2, even gears
+    let cmd1: Port          = k.bus.alloc(0.0);
+    let cmd2: Port          = k.bus.alloc(0.0);
+    let sel1: Port          = k.bus.alloc(0.0);
+    let sel2: Port          = k.bus.alloc(0.0);
+    let t_c1: Port          = k.bus.alloc(0.0);
+    let t_c2: Port          = k.bus.alloc(0.0);
+    let slip1: Port         = k.bus.alloc(0.0);
+    let slip2: Port         = k.bus.alloc(0.0);
+    let q_c1: Port          = k.bus.alloc(0.0);
+    let q_c2: Port          = k.bus.alloc(0.0);
+    let t_disc1: Port       = k.bus.alloc(293.15);
+    let t_disc2: Port       = k.bus.alloc(293.15);
+    let wear1: Port         = k.bus.alloc(0.0);
+    let wear2: Port         = k.bus.alloc(0.0);
+    let glaze1: Port        = k.bus.alloc(0.0);
+    let glaze2: Port        = k.bus.alloc(0.0);
+    let omega_in1: Port     = k.bus.alloc(0.0);
+    let omega_in2: Port     = k.bus.alloc(0.0);
+    let n_in1: Port         = k.bus.alloc(0.0); // rpm, true
+    let n_in2: Port         = k.bus.alloc(0.0);
+    let n_in1_s: Port       = k.bus.alloc(0.0); // rpm, sensor
+    let n_in2_s: Port       = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -170,16 +172,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // real ECUs blend it with speed-density rather than trusting it alone
     k.add(Box::new(AnalogSensor::new(m_dot_maf, m_maf_s, 0.020, 0.4e-3, 0.5, 0.0)));
     
-    k.add(Box::new(Clutch::dq200_k1(ClutchPorts { omega_eng: omega, cmd: clutch_cmd, t_out, j_ref,
-        omega_in, t_clutch, slip, q_clutch, v_veh, t_disc, t_amb, wear_um, glaze, n_in_rpm
-    }, omega_in_init, 293.15,
-        wear.get("clutch.k1.wear_um", 0.0),
-        wear.get("clutch.k1.glaze", 0.0),
-    )));
+    k.add(Box::new(Clutch::dq200(ClutchPorts { omega_eng: omega, omega_in: omega_in1, cmd: cmd1, v_veh,
+        t_amb, t_clutch: t_c1, slip: slip1, q_clutch: q_c1, t_disc: t_disc1, glaze: glaze1, wear_um: wear1,
+    }, 293.15, wear.get("clutch.k1.wear_um", 0.0), wear.get("clutch.k1.glaze", 0.0))));
+
+    k.add(Box::new(Clutch::dq200(ClutchPorts { omega_eng: omega, omega_in: omega_in2, cmd: cmd2, v_veh,
+        t_amb, t_clutch: t_c2, slip: slip2, q_clutch: q_c2, t_disc: t_disc2, glaze: glaze2, wear_um: wear2,
+    }, 293.15, wear.get("clutch.k2.wear_um", 0.0), wear.get("clutch.k2.glaze", 0.0))));
 
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
-    k.add(Box::new(Engine::new(par, EnginePorts { q_cmd, p_im, t_im, t_load, t_clutch, visc_mult,
+    k.add(Box::new(Engine::new(par, EnginePorts { q_cmd, p_im, t_im, t_load, t_c1, t_c2, visc_mult,
         omega, theta, m_dot_air, afr, m_fuel, eta_ind, q_fric,
     }, IDLE_RPM)));
 
@@ -228,20 +231,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The TCU reads shaft and road speed through sensors like everything else -- no clutch temperature
     // sensor exists on a DQ200, which is why the thermal protection runs on a model instead
-    k.add(Box::new(AnalogSensor::new(n_in_rpm, n_in_s, 0.010, 2.0, 8000.0, 0.0)));
+    k.add(Box::new(AnalogSensor::new(n_in1, n_in1_s, 0.010, 2.0, 8000.0, 0.0)));
+    k.add(Box::new(AnalogSensor::new(n_in2, n_in2_s, 0.010, 2.0, 8000.0, 0.0)));
     k.add(Box::new(AnalogSensor::new(n_wheel, n_wheel_s, 0.020, 1.0, 2000.0, 0.0)));
 
     k.add(Box::new(RoadLoad::new(RoadLoadPar::passat_b8_16tdi(), RoadLoadPorts {
         v_veh, grade, headwind, brake, p_amb, t_amb, f_road,
     })));
-    k.add(Box::new(Driveline::dq200_passat(RoadLoadPar::passat_b8_16tdi(), DrivelinePorts {
-        omega_in, gear, f_road, v_veh, n_wheel, t_out, j_ref,
-    })));
+    k.add(Box::new(Gearbox::dq200_passat(RoadLoadPar::passat_b8_16tdi(), GearboxPorts {
+        t_c1, t_c2, sel1, sel2, f_road, omega_in1, omega_in2, n_in1, n_in2, v_veh, n_wheel
+    }, sc.start_kmh)));
 
     k.add(Box::new(
         Tcu::new(TcuPorts {
-            lever, n_eng: n_meas, n_in: n_in_s, v_veh: n_wheel_s, pedal, brake, clutch_cmd, gear,
-            clutch_state, t_disc_est, overheat,
+            lever, n_eng: n_meas, n_in1: n_in1_s, n_in2: n_in2_s, v_veh: n_wheel_s, pedal, brake,
+            sel1, sel2, cmd1, cmd2, clutch_cmd, gear, clutch_state, t_disc_est, overheat,
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
             .task(tcu::Rate::Ms100, Box::new(ClutchThermal::dq200()))
@@ -319,21 +323,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("f_road".into(), f_road),
              ("eta_ind".into(), eta_ind),
              ("speed_source".into(), speed_source),
-             ("t_out".into(), t_out),
-             ("j_ref".into(), j_ref),
-             ("omega_in".into(), omega_in),
-             ("slip".into(), slip),
-             ("t_clutch".into(), t_clutch),
-             ("q_clutch".into(), q_clutch),
+             ("sel1".into(), sel1),
+             ("sel2".into(), sel2),
+             ("cmd1".into(), cmd1),
+             ("cmd2".into(), cmd2),
+             ("t_c1".into(), t_c1),
+             ("t_c2".into(), t_c2),
+             ("slip1".into(), slip1),
+             ("slip2".into(), slip2),
+             ("q_c1".into(), q_c1),
+             ("q_c2".into(), q_c2),
+             ("t_disc1".into(), t_disc1),
+             ("t_disc2".into(), t_disc2),
+             ("wear1".into(), wear1),
+             ("wear2".into(), wear2),
+             ("glaze1".into(), glaze1),
+             ("glaze2".into(), glaze2),
+             ("n_in1".into(), n_in1),
+             ("n_in2".into(), n_in2),
              ("clutch_cmd".into(), clutch_cmd),
-             ("t_disc".into(), t_disc),
-             ("wear_um".into(), wear_um),
-             ("glaze".into(), glaze),
              ("lever".into(), lever),
              ("clutch_state".into(), clutch_state),
              ("t_disc_est".into(), t_disc_est),
-             ("overheat".into(), overheat),
-             ("n_in_s".into(), n_in_s),],
+             ("overheat".into(), overheat),],
         SimDuration::from_millis(10),
     )?));
 
@@ -370,8 +382,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(p) = &args.wear {
         let mut w = wear.clone();
-        w.set("clutch.k1.wear_um", k.bus.get(wear_um));
-        w.set("clutch.k1.glaze", k.bus.get(glaze));
+        w.set("clutch.k1.wear_um", k.bus.get(wear1));
+        w.set("clutch.k1.glaze", k.bus.get(glaze1));
+        w.set("clutch.k2.wear_um", k.bus.get(wear2));
+        w.set("clutch.k2.glaze", k.bus.get(glaze2));
         w.save(p)?;
         eprintln!("wear saved -> {p}");
     }
