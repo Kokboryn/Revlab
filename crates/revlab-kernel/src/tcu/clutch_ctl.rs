@@ -14,9 +14,11 @@ pub struct ClutchControl {
     // torque keeps the engine there: more pedal means a higher target and a faster launch, and the
     // guard never has to intervene because the controller is already doing its job.
     pub n_launch: f64,      // rpm, engine speed to hold during engagement
-    pub kp_n: f64,          // command per rpm of engine speed error
+    pub kp_n: f64,          // command per rpm of engine speed error -- the damping
+    pub ki_n: f64,          // command per rpm·s -- trims out the steady error
     pub creep_cmd: f64,     // clamp held in D with the brake released
     cmd: f64,
+    i_n: f64,               // integrator, tracks the actual command so it can't wind up
 }
 
 impl ClutchControl {
@@ -28,9 +30,11 @@ impl ClutchControl {
             n_floor: 600.0,
             n_guard: 750.0,
             n_launch: 1400.0,
-            kp_n: 0.0015,
+            kp_n: 4.5e-4,
+            ki_n: 2.7e-3,
             creep_cmd: 0.30,
             cmd: 0.0,
+            i_n: 0.0,
         }
     }
 }
@@ -41,18 +45,20 @@ impl Task for ClutchControl {
     fn run(&mut self, s: &mut TcuState) {
         let slip = s.n_eng - s.n_in;
 
-
+        let mut err = 0.0;          // stays zero unless the speed loop is in charge
         let mut target = match (s.lever, s.gear) {
             (Lever::Drive, g) if g >= 1 => {
                 if s.n_in < 50.0 && s.pedal < 0.02 {
                     0.0                             // stopped, pedal up: creep later, open for now
-                } else if s.v_veh > 15.0 || (s.n_in > s.n_eng - self.lock_slip && s.n_in > 300.0) {
+                } else if s.n_in > s.n_eng - self.lock_slip && s.n_in > 300.0 {
                     1.0
                 } else {
-                    // Hold the engine at a launch speed rather than commanding a position: the clutch
-                    // takes whatever torque keeps it there, so the guard never has to intervene
-                    let target_n = self.n_launch + s.pedal * 800.0;
-                    self.cmd + self.kp_n * (s.n_eng - target_n)
+                    // PI on engine speed. The engine is an integrator -- clutch torque sets its acceleration
+                    // -- so pure integral action on top of it has no damping and hunts. The proportional
+                    // term is what damps it
+                    err = s.n_eng - (self.n_launch + s.pedal * 800.0);
+                    self.i_n = (self.i_n + self.ki_n * err * 0.01).clamp(0.0, 1.0);
+                    self.i_n + self.kp_n * err
                 }
             }
             _ => 0.0,                               // N, P, R until reverse exists
@@ -91,6 +97,9 @@ impl Task for ClutchControl {
         // Protection is not overridable, same principle as the ECU's arbiter.
         if s.overheat { self.cmd = self.cmd.min(0.0); }
 
+        // Back calculation: the integrator follows what the actuator actually did, so creep, the guard
+        // and the slew limit can't leave it wound up, and entering the speed loop from creep is bumpless.
+        self.i_n = self.cmd - self.kp_n * err;
 
         s.clutch_cmd = self.cmd;
         s.clutch_state = if self.cmd < 0.01 { ClutchState::Open }

@@ -3,6 +3,7 @@ pub mod diag;
 
 use revlab_core::{SimDuration, SimTime};
 use crate::{Component, Ctx, Port, Trigger};
+use std::f64::consts::PI;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Rate { Ms10, Ms100 }
@@ -65,7 +66,7 @@ pub struct TcuPorts {
     pub n_eng: Port,    // rpm, engine speed (CAN in a real car)
     pub n_in1: Port,    // rpm, shaft 1 speed sensor, odd gears
     pub n_in2: Port,    // rpm, shaft 2 speed sensor, even gears
-    pub v_veh: Port,    // rpm, wheel speed sensor
+    pub n_wheel: Port,    // rpm, wheel speed sensor (ABS over CAN in a real car)
     pub pedal: Port,
     pub brake: Port,
     // outputs: actuators
@@ -85,6 +86,8 @@ pub struct Tcu {
     state: TcuState,
     tasks: Vec<(Rate, Box<dyn Task>)>,
     p: TcuPorts,
+    r_wheel: f64,                   // m, coded rolling radius -- the TCU's belief, not the plant's tire
+
 }
 
 impl Tcu {
@@ -102,6 +105,7 @@ impl Tcu {
             },
             tasks: Vec::new(),
             p,
+            r_wheel: 0.314,
         }
     }
 
@@ -143,7 +147,8 @@ impl Component for Tcu {
         } else {
             ctx.bus.get(self.p.n_in2)
         };
-        self.state.v_veh    = ctx.bus.get(self.p.v_veh);
+        // Wheel rpm to road speed through the coded tire size, the way a real TCU does it
+        self.state.v_veh    = ctx.bus.get(self.p.n_wheel) * 2.0 * PI / 60.0 * self.r_wheel * 3.6;
         self.state.pedal    = ctx.bus.get(self.p.pedal);
         self.state.brake    = ctx.bus.get(self.p.brake);
 

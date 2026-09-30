@@ -244,7 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     k.add(Box::new(
         Tcu::new(TcuPorts {
-            lever, n_eng: n_meas, n_in1: n_in1_s, n_in2: n_in2_s, v_veh: n_wheel_s, pedal, brake,
+            lever, n_eng: n_meas, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: n_wheel_s, pedal, brake,
             sel1, sel2, cmd1, cmd2, clutch_cmd, gear, clutch_state, t_disc_est, overheat,
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
