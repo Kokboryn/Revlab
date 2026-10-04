@@ -37,6 +37,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("drive_away", "rolling start at 23.6 km/h in 4th, pedal to 50% at t=5s"),
     ("launch", "select D at t=2s, pedal to 40% - TCU handles engagement"),
     ("hill_start", "10% grade, pull away from rest under TCU control"),
+    ("top_speed", "full throttle from rest to top speed, list at 40 s, N at 90 s, roll to a stop"),
 ];
 
 impl Scenario {
@@ -59,6 +60,12 @@ impl Scenario {
                 Event::Lever { at_s: 2.0, lever: Lever::Drive },
                 Event::Pedal { at_s: 2.5, position: 0.35 },
                 Event::Brake { at_s: 3.5, cmd: 0.0 },       // release once slipping
+            ]),
+            "top_speed"     => (240, 0.0, 1, vec![
+                Event::Lever { at_s: 2.0, lever: Lever::Drive },
+                Event::Pedal { at_s: 3.0, position: 1.0 },      // flat out
+                Event::Pedal { at_s: 40.0, position: 0.0 },      // lift: engine braking in gear
+                Event::Lever { at_s: 90.0, lever: Lever::Neutral }, // clutch opens, coast to rest
             ]),
             _ => return None,
         };

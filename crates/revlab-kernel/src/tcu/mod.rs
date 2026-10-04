@@ -1,4 +1,5 @@
 pub mod clutch_ctl;
+pub mod shift_ctl;
 pub mod diag;
 
 use revlab_core::{SimDuration, SimTime};
@@ -29,7 +30,7 @@ impl Rate {
 
 /// What the driver is asking for. The TCU decides whether to grant it
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum Lever { Park, Reverse, Neutral, Drive }
+pub enum Lever { Park, Reverse, Neutral, Drive, Manual }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ClutchState { Open, Engaging, Closed }
@@ -42,6 +43,10 @@ pub struct TcuState {
     pub lever: Lever,
     pub n_eng: f64,                 // rpm, from the engine speed line
     pub n_in: f64,                  // rpm, input shaft sensor
+    pub n_shaft: [f64; 2],          // rpm, both input shaft sensors
+    pub eng: [usize; 2],            // gear engaged per shaft, from the fork position
+    pub sel: [usize; 2],            // fork requests
+    pub cmd: [f64; 2],              // K1, K2 clamp
     pub v_veh: f64,                 // km/h, from wheel speed
     pub pedal: f64,
     pub brake: f64,
@@ -66,6 +71,8 @@ pub struct TcuPorts {
     pub n_eng: Port,    // rpm, engine speed (CAN in a real car)
     pub n_in1: Port,    // rpm, shaft 1 speed sensor, odd gears
     pub n_in2: Port,    // rpm, shaft 2 speed sensor, even gears
+    pub eng1: Port,     // fork position sensor, shaft 1: gear engaged, 0 while moving
+    pub eng2: Port,
     pub n_wheel: Port,    // rpm, wheel speed sensor (ABS over CAN in a real car)
     pub pedal: Port,
     pub brake: Port,
@@ -102,6 +109,10 @@ impl Tcu {
                 clutch_cmd: 0.0,
                 t_disc_est: 293.15,
                 overheat: false,
+                n_shaft: [0.0; 2],
+                eng: [0; 2],
+                sel: [0; 2],
+                cmd: [0.0; 2]
             },
             tasks: Vec::new(),
             p,
@@ -119,12 +130,14 @@ impl Tcu {
 impl Lever {
     pub fn from_port(v: f64) -> Lever {
         match v.round() as i32 {
-            0 => Lever::Park, 1 => Lever::Reverse, 3 => Lever::Drive, _ => Lever::Neutral,
+            0 => Lever::Park, 1 => Lever::Reverse, 3 => Lever::Drive, 4 => Lever::Manual, _ => Lever::Neutral,
         }
     }
     pub fn to_port(self) -> f64 {
-        match self { Lever::Park => 0.0, Lever::Reverse => 1.0, Lever::Neutral => 2.0, Lever::Drive => 3.0 }
+        match self { Lever::Park => 0.0, Lever::Reverse => 1.0, Lever::Neutral => 2.0, Lever::Drive => 3.0, Lever::Manual => 4.0 }
     }
+    /// Positions where the car is meant to be driven: D, and the tiptronic gate beside it
+    pub fn drives(self) -> bool { matches!(self, Lever::Drive | Lever::Manual) }
 }
 
 impl Component for Tcu {
@@ -142,11 +155,11 @@ impl Component for Tcu {
         self.state.lever    = Lever::from_port(ctx.bus.get(self.p.lever));
         self.state.n_eng    = ctx.bus.get(self.p.n_eng);
         // Watch the shaft that carries the engaged gear
-        self.state.n_in     = if self.state.gear % 2 == 1 {
-            ctx.bus.get(self.p.n_in1)
-        } else {
-            ctx.bus.get(self.p.n_in2)
-        };
+        self.state.n_shaft = [ctx.bus.get(self.p.n_in1), ctx.bus.get(self.p.n_in2)];
+        self.state.eng      = [ctx.bus.get(self.p.eng1).round().max(0.0) as usize,
+                                ctx.bus.get(self.p.eng2).round().max(0.0) as usize];
+        // Watch the shaft that carries the engaged gear
+        self.state.n_in     = self.state.n_shaft[if self.state.gear % 2 == 1 { 0 } else { 1 }];
         // Wheel rpm to road speed through the coded tire size, the way a real TCU does it
         self.state.v_veh    = ctx.bus.get(self.p.n_wheel) * 2.0 * PI / 60.0 * self.r_wheel * 3.6;
         self.state.pedal    = ctx.bus.get(self.p.pedal);
@@ -157,25 +170,11 @@ impl Component for Tcu {
             if *r == rate { t.run(&mut self.state); }
         }
 
-        // A real TCU knows its gearbox: odd gears on K1, even on K2. The pack that carries the engaged
-        // gear gets the command, the other stays open
-        let g = self.state.gear;
-        let odd = g % 2 == 1;
-
-        // --- output drivers
-
-        // Preselect the next gear up on the idle shaft; 7th has none, so it holds 6th for the way down.
-        // Interim: the shift sequencer in 2b takes this over and chooses up or down.
-        let (s1, s2) = match g {
-            0 => (0, 0),
-            7 => (7, 6),
-            g if odd => (g, g + 1),
-            g => (g + 1, g),
-        };
-        ctx.bus.set(self.p.sel1, s1 as f64);
-        ctx.bus.set(self.p.sel2, s2 as f64);
-        ctx.bus.set(self.p.cmd1, if odd { self.state.clutch_cmd } else { 0.0 });
-        ctx.bus.set(self.p.cmd2, if !odd && g > 0 { self.state.clutch_cmd } else { 0.0 });
+        // ShiftControl owns both forks and both clutches
+        ctx.bus.set(self.p.sel1, self.state.sel[0] as f64);
+        ctx.bus.set(self.p.sel2, self.state.sel[1] as f64);
+        ctx.bus.set(self.p.cmd1, self.state.cmd[0]);
+        ctx.bus.set(self.p.cmd2, self.state.cmd[1]);
         ctx.bus.set(self.p.clutch_cmd, self.state.clutch_cmd);
         ctx.bus.set(self.p.gear, self.state.gear as f64);
         ctx.bus.set(self.p.clutch_state, match self.state.clutch_state {

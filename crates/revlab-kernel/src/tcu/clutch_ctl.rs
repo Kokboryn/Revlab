@@ -3,7 +3,7 @@
 /// That is what makes a launch smooth regardless of pedal, load or gradient, and it is why a real DSG
 /// can pull away on a hill without the driver balancing anything.
 
-use super::{ClutchState, Lever, Task, TcuState};
+use super::{ClutchState, Task, TcuState};
 pub struct ClutchControl {
     pub rate_open: f64,     // 1/s, releasing is a valve opening -- fast
     pub rate_max: f64,      // 1/s, actuator slew -- the servo has bandwidth
@@ -47,7 +47,7 @@ impl Task for ClutchControl {
 
         let mut err = 0.0;          // stays zero unless the speed loop is in charge
         let mut target = match (s.lever, s.gear) {
-            (Lever::Drive, g) if g >= 1 => {
+            (lever, g) if lever.drives() && g >= 1 => {
                 if s.n_in < 50.0 && s.pedal < 0.02 {
                     0.0                             // stopped, pedal up: creep later, open for now
                 } else if s.n_in > s.n_eng - self.lock_slip && s.n_in > 300.0 {
@@ -67,11 +67,11 @@ impl Task for ClutchControl {
         // Creep. A real automatic holds the clutch at its touch point in D once the brake is released,
         // which is why it crawls forward on the flat -- and why it only rolls back a little on a gradient
         // instead of freewheeling away.
-        if s.lever == Lever::Drive && s.gear >= 1 && s.brake < 0.05 {
+        if s.lever.drives() && s.gear >= 1 && s.brake < 0.05 {
             target = target.max(self.creep_cmd)
         }
 
-        if s.clutch_state == ClutchState::Closed && s.lever == Lever::Drive && s.gear >= 1 {
+        if s.clutch_state == ClutchState::Closed && s.lever.drives() && s.gear >= 1 {
             target = 1.0;
         }
 

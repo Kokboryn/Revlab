@@ -33,6 +33,7 @@ use revlab_kernel::plant::gearbox::{Gearbox, GearboxPorts};
 use revlab_kernel::tcu::clutch_ctl::ClutchControl;
 use revlab_kernel::tcu::diag::ClutchThermal;
 use revlab_kernel::tcu::{self, Tcu, TcuPorts, Lever};
+use revlab_kernel::tcu::shift_ctl::ShiftControl;
 
 struct RawGuard;
 impl Drop for RawGuard {
@@ -204,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::Load { at_s, torque }         => load_steps.push((at(at_s), torque)),
             Event::Speed { at_s, rpm }           => speed_steps.push((at(at_s), rpm)),
             Event::Pedal { at_s, position }      => pedal_steps.push((at(at_s), position)),
-            Event::Lever { at_s, lever  }      => lever_steps.push((at(at_s), match lever { Lever::Park => 0.0, Lever::Reverse => 1.0, Lever::Neutral => 2.0, Lever::Drive => 3.0, })),
+            Event::Lever { at_s, lever  }      => lever_steps.push((at(at_s), lever.to_port())),
             Event::Grade { at_s, rad }           => grade_steps.push((at(at_s), rad)),
             Event::Brake { at_s, cmd }           => brake_steps.push((at(at_s), cmd)),
         }
@@ -247,9 +248,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(
         Tcu::new(TcuPorts {
             lever, n_eng: n_meas, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: n_wheel_s, pedal, brake,
-            sel1, sel2, cmd1, cmd2, clutch_cmd, gear, clutch_state, t_disc_est, overheat,
+            sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est, overheat,
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
+            .task(tcu::Rate::Ms10, Box::new(ShiftControl::dq200()))
             .task(tcu::Rate::Ms100, Box::new(ClutchThermal::dq200()))
     ));
     k.add(Box::new(
