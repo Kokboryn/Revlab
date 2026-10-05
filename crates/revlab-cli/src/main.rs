@@ -32,7 +32,7 @@ use revlab_kernel::plant::road_load::{RoadLoad, RoadLoadPar, RoadLoadPorts};
 use revlab_kernel::plant::gearbox::{Gearbox, GearboxPorts};
 use revlab_kernel::tcu::clutch_ctl::ClutchControl;
 use revlab_kernel::tcu::diag::ClutchThermal;
-use revlab_kernel::tcu::{self, Tcu, TcuPorts, Lever};
+use revlab_kernel::tcu::{self, Tcu, TcuPorts};
 use revlab_kernel::tcu::shift_ctl::ShiftControl;
 
 struct RawGuard;
@@ -103,6 +103,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let freeze: Port        = k.bus.alloc(0.0);
     let t_bias: Port        = k.bus.alloc(0.0);
     let gear: Port          = k.bus.alloc(0.0);     // 0 = neutral; no scenario shifts yet
+    let tip_up: Port        = k.bus.alloc(0.0);     // running count of tiptronic + presses
+    let shift_phase: Port   = k.bus.alloc(0.0);     // 0 idle, 1 prepare, 2 release, 3 torque, 4 inertia
     let f_road: Port        = k.bus.alloc(0.0);
     let v_veh: Port         = k.bus.alloc(0.0);
     let n_wheel: Port       = k.bus.alloc(0.0);
@@ -195,6 +197,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut crank = CrankWheel::new(omega, n_meas, crank_valid,);
     let mut cam = CamWheel::new(omega, n_cam, cam_valid,);
     let mut lever_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 2.0)];
+    let mut tip_up_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
+    let mut n_tip_up = 0.0;
     let mut grade_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     let mut brake_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     for e in &sc.events {
@@ -206,6 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::Speed { at_s, rpm }           => speed_steps.push((at(at_s), rpm)),
             Event::Pedal { at_s, position }      => pedal_steps.push((at(at_s), position)),
             Event::Lever { at_s, lever  }      => lever_steps.push((at(at_s), lever.to_port())),
+            Event::TipUp { at_s }               => { n_tip_up += 1.0; tip_up_steps.push((at(at_s), n_tip_up)); },
             Event::Grade { at_s, rad }           => grade_steps.push((at(at_s), rad)),
             Event::Brake { at_s, cmd }           => brake_steps.push((at(at_s), cmd)),
         }
@@ -249,6 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Tcu::new(TcuPorts {
             lever, n_eng: n_meas, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: n_wheel_s, pedal, brake,
             sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est, overheat,
+            tip_up, shift_phase
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
             .task(tcu::Rate::Ms10, Box::new(ShiftControl::dq200()))
@@ -321,6 +327,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("crank_valid".into(), crank_valid),
              ("cam_valid".into(), cam_valid),
              ("t_bias".into(), t_bias),
+             ("shift_phase".into(), shift_phase),
              ("gear".into(), gear),
              ("v_veh".into(), v_veh),
              ("n_wheel".into(), n_wheel),
@@ -358,6 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(LoadProfile::new(grade_steps, grade)));
     k.add(Box::new(LoadProfile::new(brake_steps, brake)));
     k.add(Box::new(LoadProfile::new(lever_steps, lever)));
+    k.add(Box::new(LoadProfile::new(tip_up_steps, tip_up)));
 
     let end = SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000);
     let chunk = SimDuration::from_millis(if args.live { 100 } else { 1000 });
@@ -402,13 +410,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.plot {
         let title = format!("Revlab - {} (seed {})", sc.name, args.seed);
-        match std::process::Command::new("python")
-            .args(["tools/plot.py", &out, "--title", &title])
-            .status()
-        {
-            Ok(s) if s.success() => {}
-            Ok(_) => eprintln!("plot failed (see traceback above)"),
-            Err(e) => eprintln!("could not run tools/plot.py: {e}"),
+        // macOS ships only python3; Windows and Linux usually only has python
+        let status = ["python3", "python"].iter().find_map(|py| {
+            std::process::Command::new(py)
+                .args(["tools/plot.py", &out, "--title", &title])
+                .status().ok()
+        });
+        match status {
+            Some(s) if s.success() => {}
+            Some(_) => eprintln!("plot failed (see traceback above)"),
+            None => eprintln!("could not run tools/plot.py: no python3 or python on PATH"),
         }
     }
     Ok(())

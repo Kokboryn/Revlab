@@ -47,6 +47,8 @@ pub struct TcuState {
     pub eng: [usize; 2],            // gear engaged per shaft, from the fork position
     pub sel: [usize; 2],            // fork requests
     pub cmd: [f64; 2],              // K1, K2 clamp
+    pub tip_up: u32,                // running count of tiptronic + presses
+    pub shift_phase: u8,            // 0 idle, 1 prepare, 2 release, 3 torque, 4 inertia
     pub v_veh: f64,                 // km/h, from wheel speed
     pub pedal: f64,
     pub brake: f64,
@@ -76,6 +78,7 @@ pub struct TcuPorts {
     pub n_wheel: Port,    // rpm, wheel speed sensor (ABS over CAN in a real car)
     pub pedal: Port,
     pub brake: Port,
+    pub tip_up: Port,
     // outputs: actuators
     pub sel1: Port,     // gear selected on shaft 1
     pub sel2: Port,     // gear selected on shaft 2
@@ -87,6 +90,7 @@ pub struct TcuPorts {
     pub clutch_state: Port,
     pub t_disc_est: Port,
     pub overheat: Port,
+    pub shift_phase: Port,
 }
 
 pub struct Tcu {
@@ -112,7 +116,9 @@ impl Tcu {
                 n_shaft: [0.0; 2],
                 eng: [0; 2],
                 sel: [0; 2],
-                cmd: [0.0; 2]
+                cmd: [0.0; 2],
+                tip_up: 0,
+                shift_phase: 0,
             },
             tasks: Vec::new(),
             p,
@@ -164,6 +170,7 @@ impl Component for Tcu {
         self.state.v_veh    = ctx.bus.get(self.p.n_wheel) * 2.0 * PI / 60.0 * self.r_wheel * 3.6;
         self.state.pedal    = ctx.bus.get(self.p.pedal);
         self.state.brake    = ctx.bus.get(self.p.brake);
+        self.state.tip_up = ctx.bus.get(self.p.tip_up).round().max(0.0) as u32;
 
         // --- application
         for (r, t) in self.tasks.iter_mut() {
@@ -182,5 +189,6 @@ impl Component for Tcu {
         });
         ctx.bus.set(self.p.t_disc_est, self.state.t_disc_est);
         ctx.bus.set(self.p.overheat, if self.state.overheat { 1.0 } else { 0.0 });
+        ctx.bus.set(self.p.shift_phase, self.state.shift_phase as f64);
     }
 }

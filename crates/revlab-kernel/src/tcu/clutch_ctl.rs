@@ -103,8 +103,7 @@ impl Task for ClutchControl {
 
         s.clutch_cmd = self.cmd;
         s.clutch_state = if self.cmd < 0.01 { ClutchState::Open }
-            else if slip.abs() < self.lock_slip && s.n_in > 300.0 { ClutchState::Closed }
-            else { ClutchState::Engaging };
+        else if slip.abs() < self.lock_slip && s.n_in > 300.0 { ClutchState::Closed }
+        else { ClutchState::Engaging };
     }
 }
-

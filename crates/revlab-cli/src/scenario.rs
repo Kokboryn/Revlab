@@ -11,6 +11,7 @@ pub enum Event {
     Lever      { at_s: f64, lever: Lever },    // P/R/N/D selector
     Grade      { at_s: f64, rad: f64 },
     Brake      { at_s: f64, cmd: f64 },
+    TipUp      { at_s: f64 },
 }
 
 pub struct Scenario {
@@ -38,6 +39,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("launch", "select D at t=2s, pedal to 40% - TCU handles engagement"),
     ("hill_start", "10% grade, pull away from rest under TCU control"),
     ("top_speed", "full throttle from rest to top speed, list at 40 s, N at 90 s, roll to a stop"),
+    ("upshifts", "full throttle in the tiptronic gate, tip up through 1-2-3-4-5"),
 ];
 
 impl Scenario {
@@ -66,6 +68,14 @@ impl Scenario {
                 Event::Pedal { at_s: 3.0, position: 1.0 },      // flat out
                 Event::Pedal { at_s: 40.0, position: 0.0 },      // lift: engine braking in gear
                 Event::Lever { at_s: 90.0, lever: Lever::Neutral }, // clutch opens, coast to rest
+            ]),
+            "upshifts"      => (50, 0.0, 1, vec![
+                Event::Lever { at_s: 2.0, lever: Lever::Manual },
+                Event::Pedal { at_s: 3.0, position: 1.0 },
+                Event::TipUp { at_s: 7.0 },     // ~3200 rpm in 1st, per top_speed
+                Event::TipUp { at_s: 12.0 },
+                Event::TipUp { at_s: 20.0 },
+                Event::TipUp { at_s: 31.0 },
             ]),
             _ => return None,
         };

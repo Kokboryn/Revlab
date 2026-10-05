@@ -4,3 +4,4 @@ runs/
 *.csv
 *.png
 *.wear
+.DS_STORE
