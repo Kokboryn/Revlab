@@ -55,7 +55,7 @@ pub struct TcuState {
     pub gear: usize,                // engaged
     pub clutch_state: ClutchState,
     pub clutch_cmd: f64,            // 0..1, what the actuator is asked for
-    pub t_disc_est: f64,            // K, the TCU's own thermal model
+    pub t_disc_est: [f64; 2],            // K, the TCU's own thermal model, per pack
     pub overheat: bool,
 }
 
@@ -88,7 +88,8 @@ pub struct TcuPorts {
     pub clutch_cmd: Port,   // command to whichever pack carries the engaged gear
     pub gear: Port,
     pub clutch_state: Port,
-    pub t_disc_est: Port,
+    pub t_disc_est1: Port,
+    pub t_disc_est2: Port,
     pub overheat: Port,
     pub shift_phase: Port,
 }
@@ -111,7 +112,7 @@ impl Tcu {
                 gear: gear_init,
                 clutch_state: ClutchState::Open,
                 clutch_cmd: 0.0,
-                t_disc_est: 293.15,
+                t_disc_est: [293.15; 2],
                 overheat: false,
                 n_shaft: [0.0; 2],
                 eng: [0; 2],
@@ -187,7 +188,8 @@ impl Component for Tcu {
         ctx.bus.set(self.p.clutch_state, match self.state.clutch_state {
             ClutchState::Open => 0.0, ClutchState::Engaging => 1.0, ClutchState::Closed => 2.0,
         });
-        ctx.bus.set(self.p.t_disc_est, self.state.t_disc_est);
+        ctx.bus.set(self.p.t_disc_est1, self.state.t_disc_est[0]);
+        ctx.bus.set(self.p.t_disc_est2, self.state.t_disc_est[1]);
         ctx.bus.set(self.p.overheat, if self.state.overheat { 1.0 } else { 0.0 });
         ctx.bus.set(self.p.shift_phase, self.state.shift_phase as f64);
     }

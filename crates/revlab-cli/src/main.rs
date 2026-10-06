@@ -118,7 +118,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clutch_cmd: Port    = k.bus.alloc(0.0);
     let lever: Port         = k.bus.alloc(2.0);     // 2 = Neutral
     let clutch_state: Port  = k.bus.alloc(0.0);     // 0 open, 1 engaging, 2 closed
-    let t_disc_est: Port    = k.bus.alloc(293.15);  // The TCU's own estimate, not the plant's
+    let t_disc_est1: Port    = k.bus.alloc(293.15);  // The TCU's own estimate, not the plant's
+    let t_disc_est2: Port    = k.bus.alloc(293.15);
     let overheat: Port      = k.bus.alloc(0.0);
     let n_wheel_s: Port     = k.bus.alloc(0.0);     // ABS ring, road speed
     // Two packs, two shafts. Suffix 1 = K1, odd gears; 2 = K2, even gears
@@ -253,12 +254,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(
         Tcu::new(TcuPorts {
             lever, n_eng: n_meas, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: n_wheel_s, pedal, brake,
-            sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est, overheat,
-            tip_up, shift_phase
+            sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est1, t_disc_est2,
+            overheat, tip_up, shift_phase
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
             .task(tcu::Rate::Ms10, Box::new(ShiftControl::dq200()))
-            .task(tcu::Rate::Ms100, Box::new(ClutchThermal::dq200()))
+            .task(tcu::Rate::Ms10, Box::new(ClutchThermal::dq200()))
     ));
     k.add(Box::new(
         Ecu::new(EcuPorts {
@@ -357,7 +358,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("clutch_cmd".into(), clutch_cmd),
              ("lever".into(), lever),
              ("clutch_state".into(), clutch_state),
-             ("t_disc_est".into(), t_disc_est),
+             ("t_disc_est1".into(), t_disc_est1),
+             ("t_disc_est2".into(), t_disc_est2),
              ("overheat".into(), overheat),],
         SimDuration::from_millis(10),
     )?));
