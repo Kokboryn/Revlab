@@ -48,6 +48,7 @@ pub struct TcuState {
     pub sel: [usize; 2],            // fork requests
     pub cmd: [f64; 2],              // K1, K2 clamp
     pub tip_up: u32,                // running count of tiptronic + presses
+    pub tip_dn: u32,                // running count of tiptronic - presses
     pub shift_phase: u8,            // 0 idle, 1 prepare, 2 release, 3 torque, 4 inertia
     pub v_veh: f64,                 // km/h, from wheel speed
     pub pedal: f64,
@@ -79,6 +80,7 @@ pub struct TcuPorts {
     pub pedal: Port,
     pub brake: Port,
     pub tip_up: Port,
+    pub tip_dn: Port,
     // outputs: actuators
     pub sel1: Port,     // gear selected on shaft 1
     pub sel2: Port,     // gear selected on shaft 2
@@ -119,6 +121,7 @@ impl Tcu {
                 sel: [0; 2],
                 cmd: [0.0; 2],
                 tip_up: 0,
+                tip_dn: 0,
                 shift_phase: 0,
             },
             tasks: Vec::new(),
@@ -172,6 +175,7 @@ impl Component for Tcu {
         self.state.pedal    = ctx.bus.get(self.p.pedal);
         self.state.brake    = ctx.bus.get(self.p.brake);
         self.state.tip_up = ctx.bus.get(self.p.tip_up).round().max(0.0) as u32;
+        self.state.tip_dn = ctx.bus.get(self.p.tip_dn).round().max(0.0) as u32;
 
         // --- application
         for (r, t) in self.tasks.iter_mut() {

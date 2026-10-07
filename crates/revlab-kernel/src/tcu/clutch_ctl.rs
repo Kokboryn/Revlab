@@ -50,7 +50,9 @@ impl Task for ClutchControl {
             (lever, g) if lever.drives() && g >= 1 => {
                 if s.n_in < 50.0 && s.pedal < 0.02 {
                     0.0                             // stopped, pedal up: creep later, open for now
-                } else if s.n_in > s.n_eng - self.lock_slip && s.n_in > 300.0 {
+                } else if g >= 2 || (s.n_in > s.n_eng - self.lock_slip && s.n_in > 300.0) {
+                    // Launch control is a 1st gear strategy. In any higher gear the car is already
+                    // moving, so engagement just closes the clutch
                     1.0
                 } else {
                     // PI on engine speed. The engine is an integrator -- clutch torque sets its acceleration
