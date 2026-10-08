@@ -20,7 +20,8 @@ enum Phase {
     Release { to: usize },
     /// Capacity hands across; engine speed stays put
     Torque { to: usize, x: f64, c_learn: f64, t_est: f64 },
-    /// Off going open; on coming pulls the engine down onto its shaft
+    /// Off going open; on coming pulls the engine onto its shaft -- down after a power on upshift, up
+    /// after a power off downshift
     Inertia { to: usize, t: f64, slip0: f64, t_est: f64 },
     /// Power on downshift, inertia first: the off going clutch slips so engine's own surplus spins it
     /// up onto the new shaft
@@ -114,9 +115,11 @@ impl Task for ShiftControl {
                 let up_land = if g < 7 { s.n_eng * self.ratios[g] / self.ratios[g - 1] } else { 0.0 };
                 let dn_land = if g > 1 { s.n_eng * self.ratios[g - 2] / self.ratios[g - 1] } else { f64::MAX };
                 // Power on shifts from a closed clutch only, for now
-                let ready = s.lever == Lever::Manual && s.clutch_state == ClutchState::Closed && s.pedal > 0.05;
-                if ready && tipped && up_land >= self.n_up_min { Phase::Prepare { to: g + 1 }
-                } else if ready && tipped_dn && dn_land <= self.n_dn_max { Phase::Prepare { to: g - 1 }
+                let manual_closed = s.lever == Lever::Manual && s.clutch_state == ClutchState::Closed;
+                let power_on = s.pedal > 0.05;
+                // Upshifts power on only for now; downshifts either way
+                if manual_closed && power_on && tipped && up_land >= self.n_up_min { Phase::Prepare { to: g + 1 }
+                } else if manual_closed && tipped_dn && dn_land <= self.n_dn_max { Phase::Prepare { to: g - 1 }
                 } else { Phase::Idle }
             }
             Phase::Prepare { to } => {
@@ -125,14 +128,19 @@ impl Task for ShiftControl {
             }
             Phase::Release { to } => {
                 s.sel[shaft_of(to)] = to;
-                if s.n_eng - s.n_shaft[k] > self.slip_detect || self.cmd[k] <= 0.0 {
+                // Power on the engine runs away above its shaft; coasting it falls below. Either way the
+                // clamp at that moment measures the torque going through
+                if (s.n_eng - s.n_shaft[k]).abs() > self.slip_detect || self.cmd[k] <= 0.0 {
                     let c_learn = self.cmd[k];
                     tgt[k] = c_learn;
                     let t_est = (self.t_cap_est * c_learn * c_learn).max(5.0);
-                    if to > g {
-                        Phase::Torque { to, x: 0.0, c_learn, t_est }
+                    // A slipping clutch passes torque from its faster side to its slower side. Power on
+                    // upshifts and power off downshifts can hand torque across first; the other two have
+                    // to move engine speed first
+                    let torque_first = (to > g) == (s.pedal > 0.05);
+                    if torque_first { Phase::Torque { to, x: 0.0, c_learn, t_est }
                     } else {
-                        // Downshift: the new shaft is faster than the engine, so it has to come up first
+                        // Power on downshift: the engine has to come up before the new clutch can drive
                         self.i_n = 0.0;
                         Phase::Flare { to, t: 0.0, slip0: s.n_shaft[shaft_of(to)] - s.n_eng, t_est }
                     }
@@ -158,17 +166,22 @@ impl Task for ShiftControl {
                 let ko = shaft_of(to);
                 s.sel[ko] = to;
                 let t = t + DT;
-                // The reference runs on past the shaft instead of stopping on it: stopping there leaves the engine balanced
-                // just above sync while the shaft slowly catches up
+                // +1 after a power on upshift (engine comes down onto the shaft), -1 after a power off
+                // downshift (engine comes up). The engine's torque has the same sign in both cases, so
+                // one law covers both
+                let dir = slip0.signum();
+                // The reference runs on past the shaft instead of stopping on it: stopping there leaves
+                // the engine balanced just short of sync while the shaft slowly catches up
                 let n_ref = s.n_shaft[ko] + slip0 * (1.0 - t / self.t_inertia);
                 let alpha = slip0 / self.t_inertia * 2.0 * PI / 60.0;
-                // Feedforward: engine torque, plus what it takes to decelerate the engine along the ramp
-                let t_ff = (t_est + self.j_eng_est * alpha).max(0.0);
+                // Feedforward: the torque already going through, plus what it takes to move the engine
+                // along the ramp
+                let t_ff = (t_est + self.j_eng_est * alpha * dir).max(0.0);
                 let err = s.n_eng - n_ref;
-                self.i_n = (self.i_n + self.ki * err * DT).clamp(-0.3, 0.3);
+                self.i_n = (self.i_n + self.ki * err * dir * DT).clamp(-0.3, 0.3);
                 tgt[k] = 0.0;
-                tgt[ko] = ((t_ff / self.t_cap_est).sqrt() + self.kp * err + self.i_n).clamp(0.0, 1.0);
-                if s.n_eng - s.n_shaft[ko] < self.lock_slip || t > 3.0 * self.t_inertia {
+                tgt[ko] = ((t_ff / self.t_cap_est).sqrt() + dir * self.kp * err + self.i_n).clamp(0.0, 1.0);
+                if dir * (s.n_eng - s.n_shaft[ko]) < self.lock_slip || t > 3.0 * self.t_inertia {
                     // Synchronized: the new gear drives, and ClutchControl takes its clutch from the next run
                     s.gear = to;
                     s.clutch_state = ClutchState::Closed;

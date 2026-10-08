@@ -42,6 +42,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("top_speed", "full throttle from rest to top speed, list at 40 s, N at 90 s, roll to a stop"),
     ("upshifts", "full throttle in the tiptronic gate, tip up through 1-2-3-4-5-6-7"),
     ("kickdown", "part throttle in 5th from 50 km/h, then floor it and tip down 5-4-3, then try 2"),
+    ("coast_down", "100 km/h in 5th, lift, tip down through 4-3-2-1 while coasting"),
 ];
 
 impl Scenario {
@@ -88,6 +89,15 @@ impl Scenario {
                 Event::TipDown { at_s: 8.0 },                   // ...and tip down: 5 -> 4
                 Event::TipDown { at_s: 11.0 },                  // 4 -> 3
                 Event::TipDown { at_s: 14.0 },                  // 3 -> 2: refused if it would land above 4400
+            ]),
+            "coast_down"     => (38, 100.0, 5, vec![
+                Event::Lever { at_s: 0.0, lever: Lever::Manual },
+                Event::Pedal { at_s: 0.0, position: 0.3 },      // cruise
+                Event::Pedal { at_s: 5.0, position: 0.0 },      // lift: engine braking in 5th
+                Event::TipDown { at_s: 7.0 },                   // 5 -> 4, ~2450 -> ~3200 rpm
+                Event::TipDown { at_s: 12.0 },                  // 4 -> 3
+                Event::TipDown { at_s: 24.0 },                  // 3 -> 2 (earlier would overrev)
+                Event::TipDown { at_s: 32.0 },                  // 2 -> 1
             ]),
             _ => return None,
         };
