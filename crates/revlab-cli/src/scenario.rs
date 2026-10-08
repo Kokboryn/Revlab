@@ -39,10 +39,11 @@ pub const NAMES: &[(&str, &str)] = &[
     ("drive_away", "rolling start at 23.6 km/h in 4th, pedal to 50% at t=5s"),
     ("launch", "select D at t=2s, pedal to 40% - TCU handles engagement"),
     ("hill_start", "10% grade, pull away from rest under TCU control"),
-    ("top_speed", "full throttle from rest to top speed, list at 40 s, N at 90 s, roll to a stop"),
+    ("top_speed", "full throttle from rest to top speed, lift at 40 s, N at 90 s, roll to a stop"),
     ("upshifts", "full throttle in the tiptronic gate, tip up through 1-2-3-4-5-6-7"),
     ("kickdown", "part throttle in 5th from 50 km/h, then floor it and tip down 5-4-3, then try 2"),
     ("coast_down", "100 km/h in 5th, lift, tip down through 4-3-2-1 while coasting"),
+    ("lift_up", "tip up with the pedal lifted (1-2, 3-4), with a power on 2-3 between for contrast")
 ];
 
 impl Scenario {
@@ -85,7 +86,7 @@ impl Scenario {
             "kickdown"      => (20, 50.0, 5, vec![
                 Event::Lever { at_s: 0.0, lever: Lever::Manual },
                 Event::Pedal { at_s: 0.0, position: 0.4 },      // part throttle in 5th, ~1300 rpm
-                Event::Pedal { at_s: 8.0, position: 0.5 },      // floor it...
+                Event::Pedal { at_s: 8.0, position: 1.0 },      // floor it...
                 Event::TipDown { at_s: 8.0 },                   // ...and tip down: 5 -> 4
                 Event::TipDown { at_s: 11.0 },                  // 4 -> 3
                 Event::TipDown { at_s: 14.0 },                  // 3 -> 2: refused if it would land above 4400
@@ -98,6 +99,16 @@ impl Scenario {
                 Event::TipDown { at_s: 12.0 },                  // 4 -> 3
                 Event::TipDown { at_s: 24.0 },                  // 3 -> 2 (earlier would overrev)
                 Event::TipDown { at_s: 32.0 },                  // 2 -> 1
+            ]),
+            "lift_up"       => (22, 0.0, 1, vec![
+                Event::Lever { at_s: 2.0, lever: Lever::Manual },
+                Event::Pedal { at_s: 3.0, position: 1.0 },
+                Event::Pedal { at_s: 6.5, position: 0.0 },      // lift in 1st, ~2700 rpm
+                Event::TipUp { at_s: 7.0 },                     // power-off 1 -> 2
+                Event::Pedal { at_s: 9.0, position: 0.5 },
+                Event::TipUp { at_s: 13.0 },                    // power-on 2 -> 3, for contrast
+                Event::Pedal { at_s: 16.0, position: 0.0 },     // lift in 3rd
+                Event::TipUp { at_s: 16.5 },                    // power-off 3 -> 4
             ]),
             _ => return None,
         };

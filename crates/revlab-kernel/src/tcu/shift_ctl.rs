@@ -23,12 +23,12 @@ enum Phase {
     /// Off going open; on coming pulls the engine onto its shaft -- down after a power on upshift, up
     /// after a power off downshift
     Inertia { to: usize, t: f64, slip0: f64, t_est: f64 },
-    /// Power on downshift, inertia first: the off going clutch slips so engine's own surplus spins it
-    /// up onto the new shaft
-    Flare { to: usize, t: f64, slip0: f64, t_est: f64 },
-    /// Power on downshift, torque second: engine is at the new shaft's speed, so the oncoming clutch
-    /// grips with almost no slip while the offgoing one empties
-    Catch { to: usize, x: f64, c_off0: f64, t_est: f64 },
+    /// Inertia first: the offgoing clutch slips so the engine's own torque moves it onto the new
+    /// shaft -- up on a power on downshift, down on a power off upshift
+    Flare { to: usize, t: f64, slip0: f64, t_est: f64, tf: f64 },
+    /// Torque second: engine is at the new shaft's speed, so the on coming clutch grips with almost no
+    /// slip while the off going one empties
+    Catch { to: usize, x: f64, c_off0: f64 },
 }
 
 pub struct ShiftControl {
@@ -116,9 +116,8 @@ impl Task for ShiftControl {
                 let dn_land = if g > 1 { s.n_eng * self.ratios[g - 2] / self.ratios[g - 1] } else { f64::MAX };
                 // Power on shifts from a closed clutch only, for now
                 let manual_closed = s.lever == Lever::Manual && s.clutch_state == ClutchState::Closed;
-                let power_on = s.pedal > 0.05;
-                // Upshifts power on only for now; downshifts either way
-                if manual_closed && power_on && tipped && up_land >= self.n_up_min { Phase::Prepare { to: g + 1 }
+                // Either direction, pedal up or down -- the sequencer picks the order from both
+                if manual_closed && tipped && up_land >= self.n_up_min { Phase::Prepare { to: g + 1 }
                 } else if manual_closed && tipped_dn && dn_land <= self.n_dn_max { Phase::Prepare { to: g - 1 }
                 } else { Phase::Idle }
             }
@@ -131,7 +130,10 @@ impl Task for ShiftControl {
                 // Power on the engine runs away above its shaft; coasting it falls below. Either way the
                 // clamp at that moment measures the torque going through
                 if (s.n_eng - s.n_shaft[k]).abs() > self.slip_detect || self.cmd[k] <= 0.0 {
-                    let c_learn = self.cmd[k];
+                    // Detection lags the slip point by a task: the clamp now is already one release step
+                    // below where the clutch let go, and torque goes with clamp squared. Measure from the
+                    // step before, the last one that was still holding
+                    let c_learn = (self.cmd[k] + self.release_rate * DT).min(1.0);
                     tgt[k] = c_learn;
                     let t_est = (self.t_cap_est * c_learn * c_learn).max(5.0);
                     // A slipping clutch passes torque from its faster side to its slower side. Power on
@@ -140,9 +142,17 @@ impl Task for ShiftControl {
                     let torque_first = (to > g) == (s.pedal > 0.05);
                     if torque_first { Phase::Torque { to, x: 0.0, c_learn, t_est }
                     } else {
-                        // Power on downshift: the engine has to come up before the new clutch can drive
+                        // Inertia first: engine speed has to move before the new clutch can take torque --
+                        // up on a power on downshift, down on a power off upshift
                         self.i_n = 0.0;
-                        Phase::Flare { to, t: 0.0, slip0: s.n_shaft[shaft_of(to)] - s.n_eng, t_est }
+                        let slip0= s.n_shaft[shaft_of(to)] - s.n_eng;
+                        // The engine moves on its own torque, so the ramp can't ask more than that torque
+                        // delivers. Eased, the peak rate is twice the average; keep it under 80% of the
+                        // engine's own, so the off going clutch never has to let go completely
+                        let w0 = slip0.abs() * 2.0 * PI / 60.0;
+                        let a_eng = t_est / self.j_eng_est;
+                        let tf = self.t_inertia.max(2.0 * w0 / (0.8 * a_eng));
+                        Phase::Flare { to, t: 0.0, slip0, t_est, tf }
                     }
                 } else {
                     tgt[k] = self.cmd[k] - self.release_rate * DT;
@@ -189,38 +199,48 @@ impl Task for ShiftControl {
                 } else { Phase::Inertia { to, t, slip0, t_est } }
             }
 
-            Phase::Flare { to, t, slip0, t_est } => {
+            Phase::Flare { to, t, slip0, t_est, tf } => {
                 let ko = shaft_of(to);
                 s.sel[ko] = to;
                 let t = t + DT;
-                // Engine speed ramps up onto the new shaft and runs past it, so it crosses on schedule
-                let n_ref = s.n_shaft[ko] - slip0 * (1.0 - t / self.t_inertia);
-                let alpha = slip0 / self.t_inertia * 2.0 * PI / 60.0;
-                // The offgoing clutch carries everything except what it takes to accelerate the engine
-                // along the ramp. That shortfall is the sag a kickdown has before it pulls
-                let t_ff = (t_est - self.j_eng_est * alpha).max(0.0);
+                // +1 on a power on downshift (engine comes up), -1 on a power off upshift (engine comes
+                // down). The engine's torque has the same sign as the slip in both, so one law covers both
+                let dir = slip0.signum();
+                // Ease out: slip closes quickly at first and arrives at the shaft with zero rate. Here the
+                // off going clutch steers and the on coming one starts from nothing, so the engine has to
+                // be standing at the shaft when they swap -- crossing at full rate overshoots it
+                let tau = (t / tf).min(1.0);
+                let n_ref = s.n_shaft[ko] - slip0 * (1.0 - tau) * (1.0 - tau);
+                let alpha = 2.0 * slip0 * (1.0 - tau) / tf * 2.0 * PI / 60.0;
+                // The off going clutch carries the torque going through, less what it takes to move the
+                // engine along the ramp -- the engine's own torque does the moving. Power-on that shortfall
+                // is the kickdown sag; coasting it is a moment of lighter engine braking
+                let t_ff = (t_est - self.j_eng_est * alpha * dir).max(0.0);
                 let err = s.n_eng - n_ref;
-                self.i_n = (self.i_n + self.ki * err * DT).clamp(-0.3, 0.3);
-                tgt[k] = ((t_ff / self.t_cap_est).sqrt() + self.kp * err + self.i_n).clamp(0.0, 1.0);
+                self.i_n = (self.i_n + self.ki * err * dir * DT).clamp(-0.3, 0.3);
+                tgt[k] = ((t_ff / self.t_cap_est).sqrt() + dir * self.kp * err + self.i_n).clamp(0.0, 1.0);
                 tgt[ko] = 0.0;
-                if s.n_eng - s.n_shaft[ko] > -self.lock_slip || t > 3.0 * self.t_inertia {
-                    Phase::Catch { to, x: 0.0, c_off0: self.cmd[k], t_est }
-                } else { Phase::Flare { to, t, slip0, t_est } }
+                // Hand over only once the ramp has landed: the engine has to be standing at the shaft,
+                // held by the off going clutch, not passing through it
+                if (tau >= 1.0 && dir * (s.n_shaft[ko] - s.n_eng) < self.lock_slip) || t > 3.0 * tf {
+                    Phase::Catch { to, x: 0.0, c_off0: self.cmd[k] }
+                } else { Phase::Flare { to, t, slip0, t_est, tf } }
             }
 
-            Phase::Catch { to, x, c_off0, t_est } => {
+            Phase::Catch { to, x, c_off0 } => {
                     let ko = shaft_of(to);
                     s.sel[ko] = to;
                     let x = (x + DT / self.t_torque).min(1.0);
-                    // Oncoming takes the engine's torque with a margin, so it holds the engine at its shaft
-                    // while the offgoing clutch empties
-                    tgt[ko] = (x * (1.0 + self.margin) * t_est / self.t_cap_est).sqrt().min(1.0);
+                    // Sized from the clamp that was actually holding the engine at the end of the flare.
+                    // The clutches are the same design, so the same clamp carries the same torque --
+                    // whatever the estimate before the shift said
+                    tgt[ko] = (c_off0 * (x * (1.0 + self.margin)).sqrt()).min(1.0);
                     tgt[k] = c_off0 * (1.0 - x).sqrt();
                     if x >= 1.0 {
                         s.gear = to;
                         s.clutch_state = ClutchState::Closed;
                         Phase::Idle
-                    } else { Phase::Catch {to, x, c_off0, t_est} }
+                    } else { Phase::Catch {to, x, c_off0 } }
                 }
         };
 
