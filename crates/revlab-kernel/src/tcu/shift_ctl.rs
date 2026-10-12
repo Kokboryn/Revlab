@@ -11,6 +11,16 @@ use super::{ClutchState, Lever, Task, TcuState};
 /// Shaft index that carries gear `g`: odd gears on shaft 1 (0), even gears on shaft 2 (1)
 pub fn shaft_of(g: usize) -> usize { if g % 2 == 1 { 0 } else { 1 } }
 
+/// Piecewise linear lookup over pedal
+fn interp(t: &[(f64, f64)], x: f64) -> f64 {
+    if x <= t[0].0 { return t[0].1; }
+    for w in t.windows(2) {
+        let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+        if x <= x1 { return y0 + (y1 - y0) * (x - x0) / (x1 - x0); }
+    }
+    t[t.len() - 1].1
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum Phase {
     Idle,
@@ -46,10 +56,24 @@ pub struct ShiftControl {
     pub ratios: [f64; 7],   // overall ratios -- the TCU knows its own gearbox
     pub n_up_min: f64,      // rpm, refuse an upshift that would land below this (lugging)
     pub n_dn_max: f64,      // rpm, refuse a downshift that would land above this (over-rev)
+    pub map_up: [(f64, f64); 5],    // (pedal, shaft rpm) upshift line
+    pub map_dn: [(f64, f64); 5],    // (pedal, shaft rpm) downshift line
+    pub land_margin: f64,           // rpm an upshift must land above the new gear's downshift line
+    pub kd_pedal: f64,              // pedal above which the box steps down on its own (kickdown)
+    pub kd_land: f64,               // rpm a kickdown step may land at, at most
+    pub t_confirm: f64,             // s a map request must persist before it is acted on
+    pub min_hold: f64,              // s in a gear before the map may shift again
     phase: Phase,
     i_n: f64,
     seen_up: u32,
     seen_dn: u32,
+    pre_dn: bool,                   // preselect the gear below rather than above
+    want: usize,                    // gear the map is asking for, 0 = none
+    want_t: f64,
+    since_shift: f64,
+    v_f: f64,                       // km/h, filtered road speed
+    a_f: f64,                       // m/s², filtered acceleration
+    primed: bool,
     cmd: [f64; 2],
 }
 
@@ -70,10 +94,26 @@ impl ShiftControl {
             ratios: [13.633, 7.777, 5.252, 4.011, 3.067, 2.413, 1.957],
             n_up_min: 1100.0,
             n_dn_max: 4400.0,
+            // Starting values, not VW's calibration: early upshifts on light pedal, late on full, and a
+            // downshift line low enough that the engine never labors
+            map_up: [(0.0, 1600.0), (0.25, 1900.0), (0.5, 2500.0), (0.75, 3200.0), (1.0, 4100.0)],
+            map_dn: [(0.0, 1050.0), (0.25, 1150.0), (0.5, 1400.0), (0.75, 1700.0), (1.0, 2000.0)],
+            land_margin: 250.0,
+            kd_pedal: 0.95,
+            kd_land: 3800.0,
+            t_confirm: 0.2,
+            min_hold: 1.0,
             phase: Phase::Idle,
             i_n: 0.0,
             seen_up: 0,
             seen_dn: 0,
+            pre_dn: false,
+            want: 0,
+            want_t: 0.0,
+            since_shift: 0.0,
+            v_f: 0.0,
+            a_f: 0.0,
+            primed: false,
             cmd: [0.0; 2],
         }
     }
@@ -102,25 +142,74 @@ impl Task for ShiftControl {
         let k = shaft_of(g);
         let shifting = self.phase != Phase::Idle;
 
-        // Default: the driving clutch follows ClutchControl, the idle shaft preselects the next gear up
+        // Acceleration from the TCU's own road speed, filtered twice: the wheel sensor's noise would
+        // swamp a raw derivative
+        if !self.primed { self.v_f = s.v_veh; self.primed = true; }
+        let v_prev = self.v_f;
+        self.v_f += (s.v_veh - self.v_f) * DT / 0.2;
+        self.a_f += ((self.v_f - v_prev) / 3.6 / DT - self.a_f) * DT / 0.5;
+
+        // Shift map: lines in shaft rpm of the current gear against pedal
+        let p = s.pedal.clamp(0.0, 1.0);
+        let n_up = interp(&self.map_up, p);
+        let n_dn = interp(&self.map_dn, p);
+
+        // Preselect where the next shift will go. In D, if the map already wants a shift, that decides --
+        // a kickdown chain or a tip-out chain knows its next step. Otherwise, gaining speed means up and
+        // losing it means down; in between, where the shaft sits in the band, with a dead band so the fork
+        // doesn't shuttle
+        let auto = s.lever == Lever::Drive;
+        let dn_land_pre = if g > 1 { s.n_in * self.ratios[g - 2] / self.ratios[g - 1] } else { f64::MAX };
+        if auto && g > 1 && (s.n_in < n_dn || (p >= self.kd_pedal && dn_land_pre <= self.kd_land)) {
+            self.pre_dn = true;
+        } else if auto && g < 7 && s.n_in > n_up {
+            self.pre_dn = false;
+        } else if self.a_f > 0.3 { self.pre_dn = false; }
+        else if self.a_f < -0.3 { self.pre_dn = true; }
+        else {
+            let x = (s.n_in - n_dn) / (n_up - n_dn);
+            if x < 0.3 { self.pre_dn = true; } else if x > 0.7 { self.pre_dn = false; }
+        }
+
+        // Default: the driving clutch follows ClutchControl, the idle shaft holds the preselected gear
         let mut tgt = [0.0; 2];
         tgt[k] = s.clutch_cmd;
         s.sel[k] = g;
-        s.sel[1 - k] = if g == 7 { 6 } else { g + 1 };
+        s.sel[1 - k] = if g == 7 || (self.pre_dn && g > 1) { g - 1 } else { g + 1 };
 
         self.phase = match self.phase {
             Phase::Idle => {
-                // Where each shift would put the engine. A tio that would lug or overrev it is refused,
-                // as a real tiptronic does
+                self.since_shift += DT;
+                // Where each shift would put the engine
                 let up_land = if g < 7 { s.n_eng * self.ratios[g] / self.ratios[g - 1] } else { 0.0 };
                 let dn_land = if g > 1 { s.n_eng * self.ratios[g - 2] / self.ratios[g - 1] } else { f64::MAX };
-                // Power on shifts from a closed clutch only, for now
-                let manual_closed = s.lever == Lever::Manual && s.clutch_state == ClutchState::Closed;
-                // Either direction, pedal up or down -- the sequencer picks the order from both
-                if manual_closed && tipped && up_land >= self.n_up_min { Phase::Prepare { to: g + 1 }
-                } else if manual_closed && tipped_dn && dn_land <= self.n_dn_max { Phase::Prepare { to: g - 1 }
+                let closed = s.clutch_state == ClutchState::Closed;
+
+                // In D the map asks. An upshift has to land clear of the new gear's downshift line, or the
+                // box would hunt between the two
+                let ask = if s.lever == Lever::Drive && closed {
+                    let kick = p >= self.kd_pedal && dn_land <= self.kd_land;
+                    if g < 7 && s.n_in > n_up && up_land >= n_dn + self.land_margin { g + 1 }
+                    else if g > 1 && (s.n_in < n_dn || kick) && dn_land <= self.n_dn_max { g - 1 }
+                    else { 0 }
+                } else { 0 };
+                // A request has to persist, so a pedal blip or a bump in the road doesn't shift the box
+                if ask != self.want { self.want = ask; self.want_t = 0.0; } else { self.want_t += DT; }
+                let auto_go = self.want != 0 && self.want_t >= self.t_confirm && self.since_shift >= self.min_hold;
+
+                let manual = s.lever == Lever::Manual && closed;
+                let to = if manual && tipped && up_land >= self.n_up_min { g + 1 }
+                    else if manual && tipped_dn && dn_land <= self.n_dn_max { g - 1 }
+                    else if auto_go { self.want }
+                    else { 0 };
+                if to != 0 {
+                    self.since_shift = 0.0;
+                    self.want = 0;
+                    self.want_t = 0.0;
+                    Phase::Prepare { to }
                 } else { Phase::Idle }
             }
+
             Phase::Prepare { to } => {
                 s.sel[shaft_of(to)] = to;
                 if s.eng[shaft_of(to)] == to { Phase::Release { to } } else { Phase::Prepare { to } }

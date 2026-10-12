@@ -39,11 +39,12 @@ pub const NAMES: &[(&str, &str)] = &[
     ("drive_away", "rolling start at 23.6 km/h in 4th, pedal to 50% at t=5s"),
     ("launch", "select D at t=2s, pedal to 40% - TCU handles engagement"),
     ("hill_start", "10% grade, pull away from rest under TCU control"),
-    ("top_speed", "full throttle from rest to top speed, lift at 40 s, N at 90 s, roll to a stop"),
+    ("top_speed", "full throttle from rest to top speed, lift at 75 s, N at 200 s, roll to a stop"),
     ("upshifts", "full throttle in the tiptronic gate, tip up through 1-2-3-4-5-6-7"),
     ("kickdown", "part throttle in 5th from 50 km/h, then floor it and tip down 5-4-3, then try 2"),
     ("coast_down", "100 km/h in 5th, lift, tip down through 4-3-2-1 while coasting"),
-    ("lift_up", "tip up with the pedal lifted (1-2, 3-4), with a power on 2-3 between for contrast")
+    ("lift_up", "tip up with the pedal lifted (1-2, 3-4), with a power on 2-3 between for contrast"),
+    ("d_mixed", "D: gentle launch, light cruise, kickdown at 40 s, lift at 50 s and coast"),
 ];
 
 impl Scenario {
@@ -67,11 +68,11 @@ impl Scenario {
                 Event::Pedal { at_s: 2.5, position: 0.35 },
                 Event::Brake { at_s: 3.5, cmd: 0.0 },       // release once slipping
             ]),
-            "top_speed"     => (240, 0.0, 1, vec![
+            "top_speed"     => (300, 0.0, 1, vec![
                 Event::Lever { at_s: 2.0, lever: Lever::Drive },
                 Event::Pedal { at_s: 3.0, position: 1.0 },      // flat out
-                Event::Pedal { at_s: 40.0, position: 0.0 },      // lift: engine braking in gear
-                Event::Lever { at_s: 90.0, lever: Lever::Neutral }, // clutch opens, coast to rest
+                Event::Pedal { at_s: 75.0, position: 0.0 },      // lift: engine braking in gear
+                Event::Lever { at_s: 200.0, lever: Lever::Neutral }, // clutch opens, coast to rest
             ]),
             "upshifts"      => (80, 0.0, 1, vec![
                 Event::Lever { at_s: 2.0, lever: Lever::Manual },
@@ -109,6 +110,13 @@ impl Scenario {
                 Event::TipUp { at_s: 13.0 },                    // power-on 2 -> 3, for contrast
                 Event::Pedal { at_s: 16.0, position: 0.0 },     // lift in 3rd
                 Event::TipUp { at_s: 16.5 },                    // power-off 3 -> 4
+            ]),
+            "d_mixed"       => (90, 0.0, 1, vec![
+                Event::Lever { at_s: 2.0, lever: Lever::Drive },
+                Event::Pedal { at_s: 3.0, position: 0.3 },
+                Event::Pedal { at_s: 25.0, position: 0.15 },
+                Event::Pedal { at_s: 40.0, position: 1.0 },
+                Event::Pedal { at_s: 50.0, position: 0.0 },
             ]),
             _ => return None,
         };
