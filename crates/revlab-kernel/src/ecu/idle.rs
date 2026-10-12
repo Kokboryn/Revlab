@@ -48,7 +48,11 @@ impl Task for IdleTask {
         let trial = self.integ + self.ki * scale * err * dt;
         let u = self.t_ff + self.kp * err + trial;
         let t = u.clamp(self.t_min, self.t_max);
-        if (t - u).abs() < 1e-12 { self.integ = trial; }
+        // Integrate only while the floor is what the engine is getting, or when the engine sags below
+        // idle. Above idle the driver's drag is in charge, and an integrator left running there winds
+        // down until, when the engine finally does fall to idle, the floor is far too low to catch it
+        let in_charge = s.t_arb <= t + 1.0;
+        if (t - u).abs() < 1e-12 && (in_charge || err > 0.0) { self.integ = trial; }
 
         s.reqs[Source::Idle as usize] = TorqueRequest {
             kind: ReqKind::MinLimit,    // idle control is a floor, not a target
