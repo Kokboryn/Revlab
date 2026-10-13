@@ -6,6 +6,8 @@ pub mod airpath;
 pub mod loss;
 pub mod driver;
 pub mod limits;
+pub mod torque_model;
+
 
 use revlab_core::{SimDuration, SimTime};
 use crate::{Component, Ctx, Port, Trigger};
@@ -58,6 +60,7 @@ pub struct EcuState {
     pub q_smoke_limit: f64,
     pub t_loss: f64,
     pub t_ind_req: f64,
+    pub t_act: f64,     // Nm at the crank: what the engine actually makes, by the CUS's own model
     pub pedal: f64,
     pub crank_valid: bool,
     pub cam_valid: bool,
@@ -97,6 +100,7 @@ pub struct EcuPorts {
     pub m_air_est: Port,
     pub t_loss: Port,
     pub t_ind_req: Port,
+    pub t_act: Port,
     pub freeze: Port,
     pub t_bias: Port,
     pub speed_source: Port,
@@ -134,6 +138,7 @@ impl Ecu {
                 unattributable: false,
                 t_loss: 0.0,
                 t_ind_req: 0.0,
+                t_act: 0.0,
                 pedal: 0.0,
                 crank_valid: true,
                 cam_valid: true,
@@ -213,6 +218,7 @@ impl Component for Ecu {
         ctx.bus.set(self.p.m_air_est, self.state.m_air_est);
         ctx.bus.set(self.p.t_loss, self.state.t_loss);
         ctx.bus.set(self.p.t_ind_req, self.state.t_ind_req);
+        ctx.bus.set(self.p.t_act, self.state.t_act);
         ctx.bus.set(self.p.freeze, if self.state.freeze_adaptation { 1.0 } else { 0.0 });
         ctx.bus.set(self.p.t_bias, self.state.t_bias);
         ctx.bus.set(self.p.speed_source, match self.state.speed_source {

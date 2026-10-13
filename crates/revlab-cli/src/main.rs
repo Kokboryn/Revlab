@@ -153,6 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_in2_s: Port       = k.bus.alloc(0.0);
     let eng1: Port          = k.bus.alloc(0.0);
     let eng2: Port          = k.bus.alloc(0.0);
+    let t_act: Port         = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -292,6 +293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             t_ect_c: t_cool_s,
             freeze,
             t_bias,
+            t_act,
             speed_source
         }, 6.0)
             .task(Rate::Ms10, Box::new(WarmupComp::di_diesel_1_6()))
@@ -305,7 +307,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .task(Rate::Ms10, Box::new(RevLimiter::ea288()))
             .task(Rate::Ms10, Box::new(TorqueArbiter))
             .task(Rate::Ms10, Box::new(LossModel::di_diesel_1_6()))
-            .task(Rate::Ms10, Box::new(TorqueToFuel::di_diesel(4.0)))
+            .task(Rate::Ms10, Box::new(TorqueToFuel::ea288()))
     ));
     k.add(Box::new(CsvLogger::new(
         &out,
@@ -369,7 +371,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("clutch_state".into(), clutch_state),
              ("t_disc_est1".into(), t_disc_est1),
              ("t_disc_est2".into(), t_disc_est2),
-             ("overheat".into(), overheat),],
+             ("overheat".into(), overheat),
+             ("t_act".into(), t_act),
+        ],
         SimDuration::from_millis(10),
     )?));
 

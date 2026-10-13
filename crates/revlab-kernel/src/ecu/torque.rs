@@ -1,4 +1,4 @@
-use std::f64::consts::PI;
+use super::torque_model::TorqueModel;
 use super::{EcuState, Task};
 
 /// Fixed slot per producer - no allocation, and the arbiter's input set is known at compile time, as on real firmware
@@ -53,29 +53,24 @@ impl Task for TorqueArbiter {
     }
 }
 
-/// Inverse torque model: arbitrated torque -> fuel quantity
-///
-/// Deliberately approximate. The ECU has no access to the plant's efficiency map or friction correlation. So eta_cal is a single calibrated constant and the resulting bias is what closed look control exists to absorb
+/// Inverse torque model: arbitrated torque -> fuel quantity, through the ECU's calibrated torque model.
+/// Also reports what the engine actually makes on that fuel, which is what goes out on CAN
 pub struct TorqueToFuel {
-    pub eta_cal: f64,
-    pub lhv_cal: f64,
-    pub cylinders: f64,
-    pub q_max: f64,
+    pub model: TorqueModel,
 }
 
 impl TorqueToFuel {
-    pub fn di_diesel(cylinders: f64) -> Self {
-        TorqueToFuel { eta_cal: 0.19, lhv_cal: 42.7e6, cylinders, q_max: 60.0 }
-    }
+    pub fn ea288() -> Self { TorqueToFuel { model: TorqueModel::ea288_cal() } }
 }
 
 impl Task for TorqueToFuel {
     fn name(&self) -> &'static str { "TorqueToFuel" }
 
     fn run(&mut self, s: &mut EcuState) {
-        // q = T · 4π / (n_cyl · LHV · η). in mg/stroke
-        let denom = self.cylinders * self.lhv_cal * self.eta_cal;
-        let q = s.t_ind_req * 4.0 * PI / denom * 1e6;
-        s.q_cmd = q.clamp(0.0, self.q_max);
+        s.q_cmd = self.model.q_for(s.n_eng, s.t_ind_req);
+        // What the engine actually delivers once the fuel has been clamped, net of the ECU's friction
+        // estimate. This, not the request, is what a real ECU broadcasts as actual torque: fuel cut can't
+        // make negative indicated torque, and the smoke and injector limits take the top off
+        s.t_act = self.model.t_ind(s.n_eng, s.q_cmd) - s.t_loss;
     }
 }

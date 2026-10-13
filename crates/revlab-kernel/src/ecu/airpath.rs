@@ -1,4 +1,4 @@
-use std::f64::consts::PI;
+use super::torque_model::TorqueModel;
 use super::torque::{ReqKind, Source, TorqueRequest};
 use super::{EcuState, Task};
 
@@ -51,19 +51,11 @@ impl AirEstimator {
 pub struct SmokeLimiter {
     pub afr_min: f64,       // soot threshold, above stoichiometric
     pub cylinders: f64,
-    pub lhv_cal: f64,
-    pub eta_ind_cal: f64,
-    pub q_max: f64,         // mg/stroke, injector limit
+    pub model: TorqueModel, // the same calibration TorqueToFuel inverts, so the limit lands where it means
 }
 impl SmokeLimiter {
     pub fn di_diesel_1_6() -> Self {
-        SmokeLimiter {
-            afr_min: 18.0,
-            cylinders: 4.0,
-            lhv_cal: 42.7e6,
-            eta_ind_cal: 0.19,
-            q_max: 60.0,
-        }
+        SmokeLimiter { afr_min: 18.0, cylinders: 4.0, model: TorqueModel::ea288_cal() }
     }
 }
 
@@ -85,11 +77,11 @@ impl Task for SmokeLimiter {
         let q_air_mg = if cycles_per_s > 1e-3 {
             s.m_air_est / (cycles_per_s * self.cylinders) * 1e6
         } else { 0.0 };
-        let q_limit = (q_air_mg / self.afr_min).min(self.q_max);
+        let q_limit = (q_air_mg / self.afr_min).min(self.model.q_max);
         s.q_smoke_limit = q_limit;
 
         // --- express as a torque ceiling so the arbiter resolves it
-        let t_limit_ind = q_limit * 1e-6 * self.cylinders * self.lhv_cal * self.eta_ind_cal / (4.0 * PI);
+        let t_limit_ind = self.model.t_ind(s.n_eng, q_limit);
 
         s.reqs[Source::Smoke as usize] = TorqueRequest {
             kind: ReqKind::MaxLimit,
