@@ -34,6 +34,7 @@ use revlab_kernel::tcu::clutch_ctl::ClutchControl;
 use revlab_kernel::tcu::diag::ClutchThermal;
 use revlab_kernel::tcu::{self, Tcu, TcuPorts};
 use revlab_kernel::tcu::shift_ctl::ShiftControl;
+use revlab_kernel::can::{CanBus, Frame, Signal};
 
 struct RawGuard;
 impl Drop for RawGuard {
@@ -105,6 +106,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gear: Port          = k.bus.alloc(0.0);     // 0 = neutral; no scenario shifts yet
     let tip_up: Port        = k.bus.alloc(0.0);     // running count of tiptronic + presses
     let tip_dn: Port        = k.bus.alloc(0.0);     // running count of tiptronic - presses
+    // What the TCU receives over CAN: the sender's value as of the last frame, quantized
+    let can_n_eng: Port     = k.bus.alloc(IDLE_RPM);
+    let can_pedal: Port     = k.bus.alloc(0.0);
+    let can_n_wheel: Port   = k.bus.alloc(0.0);
     let shift_phase: Port   = k.bus.alloc(0.0);     // 0 idle, 1 prepare, 2 release, 3 torque, 4 inertia
     let f_road: Port        = k.bus.alloc(0.0);
     let v_veh: Port         = k.bus.alloc(0.0);
@@ -257,8 +262,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     k.add(Box::new(
         Tcu::new(TcuPorts {
-            lever, n_eng: n_meas, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: n_wheel_s, pedal, brake,
-            sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est1, t_disc_est2,
+            lever, n_eng: can_n_eng, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: can_n_wheel, pedal: can_pedal,
+            brake, sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est1, t_disc_est2,
             overheat, tip_up, tip_dn, shift_phase
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
@@ -373,6 +378,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(LoadProfile::new(lever_steps, lever)));
     k.add(Box::new(LoadProfile::new(tip_up_steps, tip_up)));
     k.add(Box::new(LoadProfile::new(tip_dn_steps, tip_dn)));
+    // Powertrain CAN. Motor_1 is the ECU's broadcast, Brake_1 the ABS's; both at 10 ms, offset clear of
+    // the TCU's tasks so it always reads a frame that has already landed
+    let ms = SimDuration::from_millis;
+    let us = SimDuration::from_micros;
+    k.add(Box::new(CanBus::new()
+        .frame(Frame { period: ms(10), offset: us(2000), signals: vec![
+            Signal { src: n_meas, dst: can_n_eng, res: 0.25 },      // rpm
+            Signal { src: pedal, dst: can_pedal, res: 0.004 },      // 0..1, 0.4% steps
+        ]})
+        .frame(Frame { period: ms(10), offset: us(2000), signals: vec![
+            Signal { src: n_meas, dst: can_n_wheel, res: 0.1 },     // rpm
+        ]})
+    ));
+
 
     let end = SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000);
     let chunk = SimDuration::from_millis(if args.live { 100 } else { 1000 });

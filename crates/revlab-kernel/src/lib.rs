@@ -10,6 +10,7 @@ pub mod tcu;
 
 pub mod telemetry;
 pub mod pacer;
+pub mod can;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct ComponentId(pub u32);
