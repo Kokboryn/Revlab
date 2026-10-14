@@ -45,7 +45,6 @@ pub struct ShiftControl {
     pub t_cap_est: f64,     // Nm, the TCU's belief of full clamp capacity, same as its thermal model
     pub j_eng_est: f64,     // kg·m², engine and flywheel
     pub rate: f64,          // 1/s, actuator slew during a shift
-    pub release_rate: f64,  // 1/s, how fast the driving clutch backs off looking for slip
     pub slip_detect: f64,   // rpm, slip that marks the torque point
     pub t_torque: f64,      // s, torque phase
     pub t_inertia: f64,     // s, engine speed ramp
@@ -83,7 +82,6 @@ impl ShiftControl {
             t_cap_est: 320.0,
             j_eng_est: 0.10,
             rate: 10.0,
-            release_rate: 4.0,
             slip_detect: 20.0,
             t_torque: 0.15,
             t_inertia: 0.30,
@@ -216,35 +214,37 @@ impl Task for ShiftControl {
             }
             Phase::Release { to } => {
                 s.sel[shaft_of(to)] = to;
-                // Power on the engine runs away above its shaft; coasting it falls below. Either way the
-                // clamp at that moment measures the torque going through
-                if (s.n_eng - s.n_shaft[k]).abs() > self.slip_detect || self.cmd[k] <= 0.0 {
-                    // Detection lags the slip point by a task: the clamp now is already one release step
-                    // below where the clutch let go, and torque goes with clamp squared. Measure from the
-                    // step before, the last one that was still holding
-                    let c_learn = (self.cmd[k] + self.release_rate * DT).min(1.0);
-                    tgt[k] = c_learn;
-                    let t_est = (self.t_cap_est * c_learn * c_learn).max(5.0);
-                    // A slipping clutch passes torque from its faster side to its slower side. Power on
-                    // upshifts and power off downshifts can hand torque across first; the other two have
-                    // to move engine speed first
-                    let torque_first = (to > g) == (s.pedal > 0.05);
-                    if torque_first { Phase::Torque { to, x: 0.0, c_learn, t_est }
+                // The engine's torque comes over CAN, so back straight off to the clamp that carries it
+                // plus margin, no hunting. Slip still wins if it shows first: the ECU's figure is a model,
+                // and this guard is also what's left when the frame stops arriving
+                let t_can = s.t_eng.abs();
+                let c_can = (t_can * (1.0 + self.margin) / self.t_cap_est).sqrt().min(1.0);
+                let slipped = (s.n_eng - s.n_shaft[k]).abs() > self.slip_detect;
+                if slipped || self.cmd[k] <= c_can + 1e-9 || self.cmd[k] <= 0.0 {
+                    let (c_learn, t_est) = if slipped {
+                        // Detection lags the slip point by a task: measure from the step before
+                        let c = (self.cmd[k] + self.rate * DT).min(1.0);
+                        (c, (self.t_cap_est * c * c).max(5.0))
                     } else {
-                        // Inertia first: engine speed has to move before the new clutch can take torque --
-                        // up on a power on downshift, down on a power off upshift
-                        self.i_n = 0.0;
-                        let slip0= s.n_shaft[shaft_of(to)] - s.n_eng;
-                        // The engine moves on its own torque, so the ramp can't ask more than that torque
-                        // delivers. Eased, the peak rate is twice the average; keep it under 80% of the
-                        // engine's own, so the off going clutch never has to let go completely
+                        ((t_can / self.t_cap_est).sqrt(), t_can.max(5.0))
+                    };
+                    tgt[k] = if slipped { c_learn } else { c_can };
+                    // A slipping clutch passes torque from its faster side to its slower side. Power on
+                    // upshifts and power off downshifts can hand torque across first; the other two
+                    // have to move engine speed first
+                    let torque_first = (to > g) == (s.pedal > 0.05);
+                    if torque_first {
+                        Phase::Torque { to, x: 0.0, c_learn, t_est }
+                    } else {
+                        let slip0 = s.n_shaft[shaft_of(to)] - s.n_eng;
                         let w0 = slip0.abs() * 2.0 * PI / 60.0;
                         let a_eng = t_est / self.j_eng_est;
                         let tf = self.t_inertia.max(2.0 * w0 / (0.8 * a_eng));
+                        self.i_n = 0.0;
                         Phase::Flare { to, t: 0.0, slip0, t_est, tf }
                     }
                 } else {
-                    tgt[k] = self.cmd[k] - self.release_rate * DT;
+                    tgt[k] = (self.cmd[k] - self.rate * DT).max(c_can);
                     Phase::Release { to }
                 }
             }

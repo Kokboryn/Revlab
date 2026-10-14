@@ -154,6 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let eng1: Port          = k.bus.alloc(0.0);
     let eng2: Port          = k.bus.alloc(0.0);
     let t_act: Port         = k.bus.alloc(0.0);
+    let can_t_eng: Port     = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -264,7 +265,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(
         Tcu::new(TcuPorts {
             lever, n_eng: can_n_eng, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: can_n_wheel, pedal: can_pedal,
-            brake, sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est1, t_disc_est2,
+            t_eng: can_t_eng, brake, sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est1, t_disc_est2,
             overheat, tip_up, tip_dn, shift_phase
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
@@ -390,6 +391,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .frame(Frame { period: ms(10), offset: us(2000), signals: vec![
             Signal { src: n_meas, dst: can_n_eng, res: 0.25 },      // rpm
             Signal { src: pedal, dst: can_pedal, res: 0.004 },      // 0..1, 0.4% steps
+            Signal { src: t_act, dst: can_t_eng, res: 0.5 },        // Nm, actual crank torque
         ]})
         .frame(Frame { period: ms(10), offset: us(2000), signals: vec![
             Signal { src: n_meas, dst: can_n_wheel, res: 0.1 },     // rpm

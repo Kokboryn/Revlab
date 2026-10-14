@@ -44,6 +44,7 @@ pub struct TcuState {
     pub n_eng: f64,                 // rpm, from the engine speed line
     pub n_in: f64,                  // rpm, input shaft sensor
     pub n_shaft: [f64; 2],          // rpm, both input shaft sensors
+    pub t_eng: f64,                 // Nm, engine's actual crank torque, from the ECU over CAN
     pub eng: [usize; 2],            // gear engaged per shaft, from the fork position
     pub sel: [usize; 2],            // fork requests
     pub cmd: [f64; 2],              // K1, K2 clamp
@@ -72,6 +73,7 @@ pub struct TcuPorts {
     // inputs
     pub lever: Port,
     pub n_eng: Port,    // rpm, engine speed (CAN in a real car)
+    pub t_eng: Port,    // Nm, actual engine torque (Motor_1)
     pub n_in1: Port,    // rpm, shaft 1 speed sensor, odd gears
     pub n_in2: Port,    // rpm, shaft 2 speed sensor, even gears
     pub eng1: Port,     // fork position sensor, shaft 1: gear engaged, 0 while moving
@@ -110,7 +112,7 @@ impl Tcu {
             state: TcuState {
                 now: SimTime::ZERO,
                 lever: Lever::Neutral,
-                n_eng: 0.0, n_in: 0.0, v_veh: 0.0, pedal: 0.0, brake: 0.0,
+                n_eng: 0.0, n_in: 0.0, v_veh: 0.0, pedal: 0.0, brake: 0.0, t_eng: 0.0,
                 gear: gear_init,
                 clutch_state: ClutchState::Open,
                 clutch_cmd: 0.0,
@@ -164,6 +166,7 @@ impl Component for Tcu {
         self.state.now      = ctx.now;
         self.state.lever    = Lever::from_port(ctx.bus.get(self.p.lever));
         self.state.n_eng    = ctx.bus.get(self.p.n_eng);
+        self.state.t_eng    = ctx.bus.get(self.p.t_eng);
         // Watch the shaft that carries the engaged gear
         self.state.n_shaft = [ctx.bus.get(self.p.n_in1), ctx.bus.get(self.p.n_in2)];
         self.state.eng      = [ctx.bus.get(self.p.eng1).round().max(0.0) as usize,
