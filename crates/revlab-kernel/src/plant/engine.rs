@@ -60,6 +60,7 @@ pub struct EnginePorts {
     // inputs
     pub q_cmd: Port,
     pub p_im: Port,
+    pub p_em: Port,         // exhaust manifold: what the pistons push the exhaust out against
     pub t_im: Port,
     pub t_load: Port,       // scripted external load, from LoadProfile
     pub t_c1: Port,         // K1 reaction, odd gears
@@ -116,6 +117,14 @@ impl Engine {
         self.p.fric.torque(&self.p.geom, self.rpm().max(0.0), self.p.p_max_nom)
     }
 
+    /// Gas exchange work per cycle is (p_em - p_im)·V_d, spread over the cycle's two revolutions.
+    /// A loss when the turbine backs the exhaust up above boost, as closed vanes do; a small gain at
+    /// high load with open vanes, where boost exceeds back pressure
+    fn pumping_torque(&self, p_em: f64, p_im: f64) -> f64 {
+        if self.omega <= 0.0 { return 0.0; }
+        (p_em - p_im) * self.p.geom.displacement() / (4.0 * PI)
+    }
+
     /// Speed-density: ṁ = η_vol · V_d · N · p / (120 · R · T). The 120 is 2 revolutions per cycle x 60 s/min
     fn air_flow(&self, p_im: f64, t_im: f64) -> f64 {
         let eta_vol = 0.90; // TODO: map over (N, p_im) Diesels sit high and flat - no throttling loss
@@ -130,9 +139,13 @@ impl Component for Engine {
 
     fn step(&mut self, _trig: u16, ctx: &mut Ctx<'_>) {
         let q = ctx.bus.get(self.ports.q_cmd);
+        let p_im = ctx.bus.get(self.ports.p_im);
+        let t_im = ctx.bus.get(self.ports.t_im);
+        let p_em = ctx.bus.get(self.ports.p_em);
         let t_load = ctx.bus.get(self.ports.t_load) + ctx.bus.get(self.ports.t_c1) + ctx.bus.get(self.ports.t_c2);
         let visc = ctx.bus.get(self.ports.visc_mult).max(1.0);
-        let t_net = self.indicated_torque(q) - self.friction_torque() * visc - t_load;
+        let t_net = self.indicated_torque(q) - self.friction_torque() * visc
+            - self.pumping_torque(p_em, p_im) - t_load;
 
         // The vehicle is not part of this inertia: the gearbox owns it, and the two clutches are the
         // only path between them. That is what lets the engine stall against a closed clutch and rev
@@ -147,8 +160,6 @@ impl Component for Engine {
         ctx.bus.set(self.ports.omega, self.omega);
         ctx.bus.set(self.ports.theta, self.theta);
         let _ = ctx.now;
-        let p_im = ctx.bus.get(self.ports.p_im);
-        let t_im = ctx.bus.get(self.ports.t_im);
         let m_air = self.air_flow(p_im, t_im).max(0.0);
         // fuel mass flow: q per stroke x cylinders x cycles per second
         let m_fuel = q.clamp(0.0, self.p.q_max) * 1e-6 * self.p.cylinders * self.rpm() / 120.0;

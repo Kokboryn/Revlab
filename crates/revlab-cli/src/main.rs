@@ -35,6 +35,7 @@ use revlab_kernel::tcu::diag::ClutchThermal;
 use revlab_kernel::tcu::{self, Tcu, TcuPorts};
 use revlab_kernel::tcu::shift_ctl::ShiftControl;
 use revlab_kernel::can::{CanBus, Frame, Signal};
+use revlab_kernel::plant::vnt_actuator::{VntActuator, VntActuatorPorts};
 
 struct RawGuard;
 impl Drop for RawGuard {
@@ -81,7 +82,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_tc: Port          = k.bus.alloc(0.0);
     let m_turb: Port        = k.bus.alloc(0.0);
     let m_fuel: Port        = k.bus.alloc(0.0);
-    let vnt: Port           = k.bus.alloc(1.0);     // vanes open, no control yet
+    let vnt_cmd: Port       = k.bus.alloc(1.0);     // fixed open until the ECU drives it
+    let vnt_pos: Port       = k.bus.alloc(0.0);
     let t_charge: Port      = k.bus.alloc(293.15);
     let speed_req: Port     = k.bus.alloc(IDLE_RPM);
     let p_im_s: Port        = k.bus.alloc(101_325.0);
@@ -176,7 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     k.add(Box::new(Environment::standard(p_amb, t_amb)));
     k.add(Box::new(Turbo::vnt_small_diesel(TurboPorts {
-        p_amb, t_amb, p_im, p_em, t_em, vnt_cmd: vnt, m_comp, t_comp: t_charge, m_turb, n_tc,
+        p_amb, t_amb, p_im, p_em, t_em, vnt_pos, m_comp, t_comp: t_charge, m_turb, n_tc,
     })));
     k.add(Box::new(IntakeManifold::new(0.0025, IntakePorts {
         t_up: t_charge, m_dot_eng: m_dot_air, m_comp_in: m_comp, p: p_im, t: t_im, m_dot_in: m_dot_maf,
@@ -201,7 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
     k.add(Box::new(Engine::new(par, EnginePorts { q_cmd, p_im, t_im, t_load, t_c1, t_c2, visc_mult,
-        omega, theta, m_dot_air, afr, m_fuel, eta_ind, q_fric,
+        omega, theta, m_dot_air, afr, m_fuel, eta_ind, q_fric, p_em
     }, IDLE_RPM)));
 
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
@@ -383,6 +385,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("t_act".into(), t_act),
              ("icpt_t".into(), icpt_t),
              ("icpt_kind".into(), icpt_kind),
+             ("vnt_pos".into(), vnt_pos),
         ],
         SimDuration::from_millis(10),
     )?));
@@ -412,6 +415,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Signal { src: icpt_t, dst: can_icpt_t, res: 0.5 },      // Nm
         ]})
     ));
+    k.add(Box::new(VntActuator::ea288(VntActuatorPorts { cmd: vnt_cmd, pos: vnt_pos }, 1.0)));
 
 
     let end = SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000);

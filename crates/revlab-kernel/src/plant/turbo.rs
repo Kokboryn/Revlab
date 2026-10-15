@@ -12,7 +12,7 @@ pub struct TurboPorts {
     pub p_im: Port,     // compressor discharge = manifold pressure
     pub p_em: Port,
     pub t_em: Port,
-    pub vnt_cmd: Port,  // 0 = closed, 1 = open
+    pub vnt_pos: Port,  // Actual vane position from the actuator: 0 = closed, 1 = open
     // outputs
     pub m_comp: Port,
     pub t_comp: Port,   // post-intercooler charge temperature
@@ -30,7 +30,10 @@ pub struct Turbo {
     pub psi_max: f64,           // peak head coefficient
     pub phi_max: f64,           // choke flow coefficient
     pub eta_c: f64,
-    pub eta_t: f64,
+    pub eta_t_peak: f64,        // turbine efficiency at the best vane position
+    pub vnt_best: f64,          // vane position of peak efficiency
+    pub eta_t_drop: f64,        // efficiency lost per (position error)²: nozzle losses closed, incidence losses open
+    pub a_c_eff: f64,           // m², compressor flow path as an orifice, when the engine draws below ambient
     pub eta_mech: f64,
     pub a_t_min: f64,           // m², VNT vanes closed
     pub a_t_max: f64,           // m², VNT vanes open
@@ -50,7 +53,10 @@ impl Turbo {
             psi_max: 1.0,
             phi_max: 0.20,
             eta_c: 0.70,
-            eta_t: 0.70,
+            eta_t_peak: 0.72,
+            vnt_best: 0.6,
+            eta_t_drop: 0.4,
+            a_c_eff: 5.0e-4,
             eta_mech: 0.98,
             a_t_min: 1.2e-4,
             a_t_max: 5.0e-4,
@@ -63,17 +69,25 @@ impl Turbo {
     pub fn rpm(&self) -> f64 { self.omega * 60.0 / (2.0 * PI) }
 
     /// Ellipse map: (phi/ph_max)² + (psi/psi_max)² = 1
-    /// Head rises with tip speed squared, so flow collapses when the pressure ratio exceeds what the current shaft speed can sustain
+    /// Head rises with tip speed squared, so flow collapses when the pressure ratio exceeds what the
+    /// current shaft speed can sustain
+    ///
+    /// When the engine draws below ambient, the slow wheel isn't the bottleneck: air goes through the
+    /// housing as through any restriction, and the wheel windmills. The map only caps flow when the
+    /// compressor has to push against boost
     fn comp_flow(&self, p_in: f64, t_in: f64, p_out: f64) -> f64 {
+        let m_free = if p_out < p_in {
+            self.a_c_eff * p_in / (R_AIR * t_in).sqrt() * psi(p_out / p_in)
+        } else { 0.0 };
         let u = self.omega * self.r_c;
-        if u < 1.0 { return 0.0; }
+        if u < 1.0 { return m_free; }
         let pr = (p_out / p_in).max(1.0);
         let head = CP_AIR * t_in * (pr.powf((GAMMA - 1.0) / GAMMA) - 1.0);
         let psi_c = 2.0 * head / (u * u);
-        if psi_c >= self.psi_max { return 0.0; }    // past surge/stall
+        if psi_c >= self.psi_max { return m_free; }     // past surge/stall
         let phi = self.phi_max * (1.0 - (psi_c / self.psi_max).powi(2)).max(0.0).sqrt();
         let rho = p_in / (R_AIR * t_in);
-        phi * rho * u * PI * self.r_c * self.r_c
+        (phi * rho * u * PI * self.r_c * self.r_c).max(m_free)
     }
 }
 
@@ -88,7 +102,7 @@ impl Component for Turbo {
         let p_im  = ctx.bus.get(self.ports.p_im);
         let p_em  = ctx.bus.get(self.ports.p_em);
         let t_em  = ctx.bus.get(self.ports.t_em);
-        let vnt   = ctx.bus.get(self.ports.vnt_cmd).clamp(0.0, 1.0);
+        let vnt   = ctx.bus.get(self.ports.vnt_pos).clamp(0.0, 1.0);
 
         // --- compressor
         let m_c = self.comp_flow(p_amb, t_amb, p_im).max(0.0);
@@ -102,11 +116,12 @@ impl Component for Turbo {
 
         // --- turbine
         let a_t = self.a_t_min + vnt * (self.a_t_max - self.a_t_min);
+        let eta_t = self.eta_t_peak - self.eta_t_drop * (vnt - self.vnt_best).powi(2);
         let m_t = if p_em > p_amb {
             a_t * p_em / (R_EXH * t_em).sqrt() * psi(p_amb / p_em)
         } else { 0.0 };
         let pr_t = (p_amb / p_em).clamp(1e-3, 1.0);
-        let p_t = m_t * CP_EXH * t_em * self.eta_t * (1.0 - pr_t.powf((GAMMA_EXH - 1.0) / GAMMA_EXH));
+        let p_t = m_t * CP_EXH * t_em * eta_t * (1.0 - pr_t.powf((GAMMA_EXH - 1.0) / GAMMA_EXH));
 
         // --- shaft. Stiff at low speed (P/(J·omega) blows up), so sub-step and hold a floor
         const N_SUB: u32 = 10;
