@@ -3,8 +3,8 @@ use super::{EcuState, Task};
 
 /// Fixed slot per producer - no allocation, and the arbiter's input set is known at compile time, as on real firmware
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Source { Idle = 0, Driver = 1, Smoke = 2, Protect = 3, RevLimit = 4 }
-pub const N_SOURCES: usize = 5;
+pub enum Source { Idle = 0, Driver = 1, Smoke = 2, Protect = 3, RevLimit = 4, Tcu = 5 }
+pub const N_SOURCES: usize = 6;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ReqKind {
@@ -72,5 +72,22 @@ impl Task for TorqueToFuel {
         // estimate. This, not the request, is what a real ECU broadcasts as actual torque: fuel cut can't
         // make negative indicated torque, and the smoke and injector limits take the top off
         s.t_act = self.model.t_ind(s.n_eng, s.q_cmd) - s.t_loss;
+    }
+}
+
+/// Torque intervention from the TCU (Gearbox_1). During a shift's inertia phase the TCU asks for a cut
+/// (a ceiling) on upshifts and a raise (a floor) on downshifts, so the engine moves its own inertia and
+/// the clutch carries a steady torque. Max limits are applied last, so protection still wins
+pub struct TcuIntervention;
+
+impl Task for TcuIntervention {
+    fn name(&self) -> &'static str { "TcuIntervention" }
+    
+    fn run(&mut self, s: &mut EcuState) {
+        s.reqs[Source::Tcu as usize] = match s.tcu_icpt_kind {
+            1 => TorqueRequest { kind: ReqKind::MaxLimit, value: s.tcu_icpt_t, active: true },
+            2 => TorqueRequest { kind: ReqKind::MinLimit, value: s.tcu_icpt_t, active: true },
+            _ => TorqueRequest::INACTIVE,
+        };
     }
 }

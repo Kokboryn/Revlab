@@ -171,6 +171,9 @@ impl Task for ShiftControl {
 
         // Default: the driving clutch follows ClutchControl, the idle shaft holds the preselected gear
         let mut tgt = [0.0; 2];
+        // No intervention unless a phase below asks for one
+        s.icpt_kind = 0;
+        s.icpt_t = 0.0;
         tgt[k] = s.clutch_cmd;
         s.sel[k] = g;
         s.sel[1 - k] = if g == 7 || (self.pre_dn && g > 1) { g - 1 } else { g + 1 };
@@ -273,9 +276,14 @@ impl Task for ShiftControl {
                 // the engine balanced just short of sync while the shaft slowly catches up
                 let n_ref = s.n_shaft[ko] + slip0 * (1.0 - t / self.t_inertia);
                 let alpha = slip0 / self.t_inertia * 2.0 * PI / 60.0;
-                // Feedforward: the torque already going through, plus what it takes to move the engine
-                // along the ramp
-                let t_ff = (t_est + self.j_eng_est * alpha * dir).max(0.0);
+                // Ask the engine to move its own inertia: a cut on an upshift, a raise coasting down. The
+                // clutch then only carries the torque already going through, and output torque stays level
+                // instead of surging or thumping
+                s.icpt_kind = if dir > 0.0 { 1 } else { 2 };
+                s.icpt_t = dir * t_est - self.j_eng_est * alpha;
+                // Feedforward from the engine's actual torque, live over CAN: whatever the ECU managed to
+                // deliver, the clutch carries that plus whatever moving the engine still needs
+                let t_ff = (dir * s.t_eng + self.j_eng_est * alpha * dir).max(0.0);
                 let err = s.n_eng - n_ref;
                 self.i_n = (self.i_n + self.ki * err * dir * DT).clamp(-0.3, 0.3);
                 tgt[k] = 0.0;
@@ -301,10 +309,15 @@ impl Task for ShiftControl {
                 let tau = (t / tf).min(1.0);
                 let n_ref = s.n_shaft[ko] - slip0 * (1.0 - tau) * (1.0 - tau);
                 let alpha = 2.0 * slip0 * (1.0 - tau) / tf * 2.0 * PI / 60.0;
-                // The off going clutch carries the torque going through, less what it takes to move the
-                // engine along the ramp -- the engine's own torque does the moving. Power-on that shortfall
-                // is the kickdown sag; coasting it is a moment of lighter engine braking
-                let t_ff = (t_est - self.j_eng_est * alpha * dir).max(0.0);
+                // Power on, ask for the extra torque that spins the engine up, so the off going clutch keeps
+                // carrying all of it, no sag, if the engine has torque to spare. Coasting there's nothing
+                // to ask for: the engine is already on fuel cut, and only friction brings it down
+                if dir > 0.0 {
+                    s.icpt_kind = 2;
+                    s.icpt_t = t_est + self.j_eng_est * alpha;
+                }
+                // Feedforward from live CAN torque: what the engine makes, less what moving it takes
+                let t_ff = (dir * s.t_eng - self.j_eng_est * alpha * dir).max(0.0);
                 let err = s.n_eng - n_ref;
                 self.i_n = (self.i_n + self.ki * err * dir * DT).clamp(-0.3, 0.3);
                 tgt[k] = ((t_ff / self.t_cap_est).sqrt() + dir * self.kp * err + self.i_n).clamp(0.0, 1.0);

@@ -61,6 +61,8 @@ pub struct EcuState {
     pub t_loss: f64,
     pub t_ind_req: f64,
     pub t_act: f64,     // Nm at the crank: what the engine actually makes, by the CUS's own model
+    pub tcu_icpt_kind: u8,     // TCU torque intervention: 0 none, 1 cut (ceiling), 2 raise (floor)
+    pub tcu_icpt_t: f64,        // Nm at the crank
     pub pedal: f64,
     pub crank_valid: bool,
     pub cam_valid: bool,
@@ -91,6 +93,8 @@ pub struct EcuPorts {
     pub cam_valid: Port,
     pub m_maf: Port,
     pub t_ect_c: Port,
+    pub tcu_icpt_kind: Port,
+    pub tcu_icpt_t: Port,
     // outputs
     pub q_cmd: Port,
     pub t_arb: Port,
@@ -139,6 +143,8 @@ impl Ecu {
                 t_loss: 0.0,
                 t_ind_req: 0.0,
                 t_act: 0.0,
+                tcu_icpt_kind: 0,
+                tcu_icpt_t: 0.0,
                 pedal: 0.0,
                 crank_valid: true,
                 cam_valid: true,
@@ -183,6 +189,8 @@ impl Component for Ecu {
         self.state.cam_valid    = ctx.bus.get(self.p.cam_valid) > 0.5;
         self.state.m_maf_meas   = ctx.bus.get(self.p.m_maf);
         self.state.t_ect_c      = ctx.bus.get(self.p.t_ect_c) - 273.15;
+        self.state.tcu_icpt_kind = ctx.bus.get(self.p.tcu_icpt_kind).round().max(0.0) as u8;
+        self.state.tcu_icpt_t = ctx.bus.get(self.p.tcu_icpt_t);
 
         let n_new = match self.state.speed_source {
             diag::SpeedSource::Crank if self.state.crank_valid => Some(self.state.n_crank),

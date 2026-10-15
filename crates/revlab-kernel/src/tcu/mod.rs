@@ -51,6 +51,8 @@ pub struct TcuState {
     pub tip_up: u32,                // running count of tiptronic + presses
     pub tip_dn: u32,                // running count of tiptronic - presses
     pub shift_phase: u8,            // 0 idle, 1 prepare, 2 release, 3 torque, 4 inertia
+    pub icpt_kind: u8,              // torque intervention to the ECU: 0 none, 1 cut, 2 raise
+    pub icpt_t: f64,                // Nm at the crank
     pub v_veh: f64,                 // km/h, from wheel speed
     pub pedal: f64,
     pub brake: f64,
@@ -96,6 +98,8 @@ pub struct TcuPorts {
     pub t_disc_est2: Port,
     pub overheat: Port,
     pub shift_phase: Port,
+    pub icpt_kind: Port,
+    pub icpt_t: Port,
 }
 
 pub struct Tcu {
@@ -125,6 +129,8 @@ impl Tcu {
                 tip_up: 0,
                 tip_dn: 0,
                 shift_phase: 0,
+                icpt_kind: 0,
+                icpt_t: 0.0,
             },
             tasks: Vec::new(),
             p,
@@ -199,5 +205,7 @@ impl Component for Tcu {
         ctx.bus.set(self.p.t_disc_est2, self.state.t_disc_est[1]);
         ctx.bus.set(self.p.overheat, if self.state.overheat { 1.0 } else { 0.0 });
         ctx.bus.set(self.p.shift_phase, self.state.shift_phase as f64);
+        ctx.bus.set(self.p.icpt_kind, self.state.icpt_kind as f64);
+        ctx.bus.set(self.p.icpt_t, self.state.icpt_t);
     }
 }
