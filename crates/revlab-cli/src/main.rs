@@ -35,6 +35,7 @@ use revlab_kernel::tcu::diag::ClutchThermal;
 use revlab_kernel::tcu::{self, Tcu, TcuPorts};
 use revlab_kernel::tcu::shift_ctl::ShiftControl;
 use revlab_kernel::can::{CanBus, Frame, Signal};
+use revlab_kernel::ecu::boost::BoostControl;
 use revlab_kernel::plant::vnt_actuator::{VntActuator, VntActuatorPorts};
 
 struct RawGuard;
@@ -157,10 +158,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let eng2: Port          = k.bus.alloc(0.0);
     let t_act: Port         = k.bus.alloc(0.0);
     let can_t_eng: Port     = k.bus.alloc(0.0);
-    let icpt_kind: Port      = k.bus.alloc(0.0);    // TCU's torque intervention request
+    let icpt_kind: Port     = k.bus.alloc(0.0);    // TCU's torque intervention request
     let icpt_t: Port        = k.bus.alloc(0.0);
-    let can_icpt_kind: Port    = k.bus.alloc(0.0);  // ...as the ECU receives it
-    let can_icpt_t: Port      = k.bus.alloc(0.0);
+    let can_icpt_kind: Port = k.bus.alloc(0.0);  // ...as the ECU receives it
+    let can_icpt_t: Port    = k.bus.alloc(0.0);
+    let p_set: Port         = k.bus.alloc(101_325.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -304,6 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             speed_source,
             tcu_icpt_kind: can_icpt_kind,
             tcu_icpt_t: can_icpt_t,
+            vnt_cmd, p_set
         }, 6.0)
             .task(Rate::Ms10, Box::new(WarmupComp::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
@@ -318,6 +321,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .task(Rate::Ms10, Box::new(TorqueArbiter))
             .task(Rate::Ms10, Box::new(LossModel::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(TorqueToFuel::ea288()))
+            .task(Rate::Ms10, Box::new(BoostControl::ea288()))
     ));
     k.add(Box::new(CsvLogger::new(
         &out,
@@ -386,6 +390,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("icpt_t".into(), icpt_t),
              ("icpt_kind".into(), icpt_kind),
              ("vnt_pos".into(), vnt_pos),
+             ("p_set".into(), p_set),
         ],
         SimDuration::from_millis(10),
     )?));

@@ -7,7 +7,7 @@ pub mod loss;
 pub mod driver;
 pub mod limits;
 pub mod torque_model;
-
+pub mod boost;
 
 use revlab_core::{SimDuration, SimTime};
 use crate::{Component, Ctx, Port, Trigger};
@@ -63,6 +63,8 @@ pub struct EcuState {
     pub t_act: f64,     // Nm at the crank: what the engine actually makes, by the CUS's own model
     pub tcu_icpt_kind: u8,     // TCU torque intervention: 0 none, 1 cut (ceiling), 2 raise (floor)
     pub tcu_icpt_t: f64,        // Nm at the crank
+    pub p_set: f64,     // Pa, boost setpoint
+    pub vnt_cmd: f64,   // VNT position demand: 0 closed, 1 open
     pub pedal: f64,
     pub crank_valid: bool,
     pub cam_valid: bool,
@@ -105,6 +107,8 @@ pub struct EcuPorts {
     pub t_loss: Port,
     pub t_ind_req: Port,
     pub t_act: Port,
+    pub vnt_cmd: Port,
+    pub p_set: Port,
     pub freeze: Port,
     pub t_bias: Port,
     pub speed_source: Port,
@@ -145,6 +149,8 @@ impl Ecu {
                 t_act: 0.0,
                 tcu_icpt_kind: 0,
                 tcu_icpt_t: 0.0,
+                p_set: 101325.0,
+                vnt_cmd: 1.0,
                 pedal: 0.0,
                 crank_valid: true,
                 cam_valid: true,
@@ -227,6 +233,8 @@ impl Component for Ecu {
         ctx.bus.set(self.p.t_loss, self.state.t_loss);
         ctx.bus.set(self.p.t_ind_req, self.state.t_ind_req);
         ctx.bus.set(self.p.t_act, self.state.t_act);
+        ctx.bus.set(self.p.vnt_cmd, self.state.vnt_cmd);
+        ctx.bus.set(self.p.p_set, self.state.p_set);
         ctx.bus.set(self.p.freeze, if self.state.freeze_adaptation { 1.0 } else { 0.0 });
         ctx.bus.set(self.p.t_bias, self.state.t_bias);
         ctx.bus.set(self.p.speed_source, match self.state.speed_source {

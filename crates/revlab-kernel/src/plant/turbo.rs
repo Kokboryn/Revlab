@@ -38,6 +38,7 @@ pub struct Turbo {
     pub a_t_min: f64,           // m², VNT vanes closed
     pub a_t_max: f64,           // m², VNT vanes open
     pub ic_eff: f64,            // intercooler effectiveness
+    pub u_tip_max: f64,         // m/s, compressor tip speed limit; the shaft clamp follows from it
     ports: TurboPorts,
     dt: f64,
 }
@@ -48,8 +49,8 @@ impl Turbo {
     pub fn vnt_small_diesel(ports: TurboPorts) -> Self {
         Turbo {
             omega: 2000.0,      // idling, barely turning
-            j_tc: 2.0e-5,
-            r_c: 0.0205,        // 41 mm wheel
+            j_tc: 2.8e-5,       // bigger wheels, slower spool
+            r_c: 0.0225,        // 45 mm wheel: rated flow at ~90% of the speed limit
             psi_max: 1.0,
             phi_max: 0.20,
             eta_c: 0.70,
@@ -59,7 +60,8 @@ impl Turbo {
             a_c_eff: 5.0e-4,
             eta_mech: 0.98,
             a_t_min: 1.2e-4,
-            a_t_max: 5.0e-4,
+            a_t_max: 6.5e-4,    // m². vanes open: keeps authority at rated flow
+            u_tip_max: 520.0,
             ic_eff: 0.65,
             ports,
             dt: Self::STEP.as_secs_f64(),
@@ -129,7 +131,7 @@ impl Component for Turbo {
         for _ in 0..N_SUB {
             let w = self.omega.max(200.0);
             self.omega += (p_t * self.eta_mech - p_c) / (self.j_tc * w) * h;
-            self.omega = self.omega.clamp(200.0, 25_000.0);
+            self.omega = self.omega.clamp(200.0, self.u_tip_max / self.r_c);
         }
 
         ctx.bus.set(self.ports.m_comp, m_c);
