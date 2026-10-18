@@ -413,13 +413,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ms = SimDuration::from_millis;
     let us = SimDuration::from_micros;
     k.add(Box::new(CanBus::new()
-        .frame(Frame { period: ms(10), offset: us(2000), signals: vec![
+        .frame(Frame { period: ms(10), offset: us(1500), signals: vec![
             Signal { src: n_meas, dst: can_n_eng, res: 0.25 },      // rpm
             Signal { src: pedal, dst: can_pedal, res: 0.004 },      // 0..1, 0.4% steps
             Signal { src: t_act, dst: can_t_eng, res: 0.5 },        // Nm, actual crank torque
         ]})
-        .frame(Frame { period: ms(10), offset: us(2000), signals: vec![
-            Signal { src: n_meas, dst: can_n_wheel, res: 0.1 },     // rpm
+        // Brake_1: the ABS's broadcast. Wheel speed from the ABS ring, not the engine
+        .frame(Frame { period: ms(10), offset: us(2500), signals: vec![
+            Signal { src: n_wheel_s, dst: can_n_wheel, res: 0.1 },     // rpm
         ]})
         // Gearbox_1: the TCU's broadcast. 4.7 ms is just after the TCU's 10 ms task and clear of every
         // other rate and plant step
@@ -429,7 +430,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ]})
     ));
     k.add(Box::new(VntActuator::ea288(VntActuatorPorts { cmd: vnt_cmd, pos: vnt_pos }, 1.0)));
-    
+
     if !dyno_steps.is_empty() {
         k.add(Box::new(Dyno::new(dyno_steps, DynoPorts { omega, t_dyno })));
     }
