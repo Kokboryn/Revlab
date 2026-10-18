@@ -1,5 +1,6 @@
 use revlab_core::Map1d;
 use super::{EcuState, Task};
+use std::f64::consts::PI;
 
 /// ECT derived friction correction, published for every model that needs it. Own task because it depends
 /// only on coolant temperature, so it can run at the top of the table where consumers get a fresh value
@@ -37,6 +38,7 @@ pub struct LossModel {
     pub fric_b: f64,        // Nm.s/rad, speed dependent
     pub fric_c: f64,        // Nm.s²/rad², grows with speed squared, as Chen-Flynn friction does
     pub accessory: f64,     // Nm, alternator/pump/AC
+    pub displacement: f64,  // m², for the pumping term
 }
 
 impl LossModel {
@@ -48,6 +50,7 @@ impl LossModel {
             fric_b: 0.0133,
             fric_c: 4.1e-5,
             accessory: 0.0,
+            displacement: 1.598e-3,
         }
     }
 }
@@ -58,7 +61,10 @@ impl Task for LossModel {
     fn run(&mut self, s: &mut EcuState) {
         let omega = s.n_eng * std::f64::consts::PI / 30.0;
         let base = self.fric_a + self.fric_b * omega + self.fric_c * omega * omega + self.accessory;
-        s.t_loss = base * s.warmup_mult;
+        // Gas exchange: (p_em - p_im)·Vd over the cycle's two revolutions. Negative at full load,
+        // where boost exceeds back pressure. Not friction, so the warm-up multiplier doesn't apply
+        let t_pump = (s.p_em_est - s.p_im_meas) * self.displacement / (4.0 * PI);
+        s.t_loss = base * s.warmup_mult + t_pump;
         s.t_ind_req = s.t_arb + s.t_loss;
     }
 }

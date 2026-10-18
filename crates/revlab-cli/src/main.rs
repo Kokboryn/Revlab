@@ -20,7 +20,7 @@ use revlab_kernel::plant::load::LoadProfile;
 use revlab_kernel::plant::turbo::{Turbo, TurboPorts};
 use revlab_kernel::plant::exhaust::{ExhaustManifold, ExhaustPorts};
 use revlab_kernel::sensors::map_maf::AnalogSensor;
-use revlab_kernel::ecu::airpath::{AirEstimator, SmokeLimiter};
+use revlab_kernel::ecu::airpath::{AirEstimator, ExhaustModel, SmokeLimiter};
 use revlab_kernel::ecu::driver::DriverDemand;
 use revlab_kernel::ecu::loss::{LossModel, WarmupComp};
 use revlab_kernel::ecu::limits::RevLimiter;
@@ -37,6 +37,7 @@ use revlab_kernel::tcu::shift_ctl::ShiftControl;
 use revlab_kernel::can::{CanBus, Frame, Signal};
 use revlab_kernel::ecu::boost::BoostControl;
 use revlab_kernel::plant::vnt_actuator::{VntActuator, VntActuatorPorts};
+use revlab_kernel::plant::dyno::{Dyno, DynoPorts};
 
 struct RawGuard;
 impl Drop for RawGuard {
@@ -163,6 +164,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let can_icpt_kind: Port = k.bus.alloc(0.0);  // ...as the ECU receives it
     let can_icpt_t: Port    = k.bus.alloc(0.0);
     let p_set: Port         = k.bus.alloc(101_325.0);
+    let t_dyno: Port        = k.bus.alloc(0.0);
+    let p_em_est: Port      = k.bus.alloc(101_325.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -205,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let par = EngineBuilder::new(geom, Fuel::DIESEL_B7)
         .build();
     k.add(Box::new(Engine::new(par, EnginePorts { q_cmd, p_im, t_im, t_load, t_c1, t_c2, visc_mult,
-        omega, theta, m_dot_air, afr, m_fuel, eta_ind, q_fric, p_em
+        omega, theta, m_dot_air, afr, m_fuel, eta_ind, q_fric, p_em, t_dyno
     }, IDLE_RPM)));
 
     let mut load_steps: Vec<(SimTime, f64)> = Vec::new();
@@ -220,6 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut n_tip_dn = 0.0;
     let mut grade_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     let mut brake_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
+    let mut dyno_steps: Vec<(SimTime, f64)> = Vec::new();
     for e in &sc.events {
         let at = |s: f64| SimTime::ZERO + SimDuration::from_millis((s * 1000.0) as u64);
         match *e {
@@ -233,6 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::TipDown { at_s }                  => { n_tip_dn += 1.0; tip_dn_steps.push((at(at_s), n_tip_dn)); },
             Event::Grade { at_s, rad }           => grade_steps.push((at(at_s), rad)),
             Event::Brake { at_s, cmd }           => brake_steps.push((at(at_s), cmd)),
+            Event::Dyno { at_s, rpm }            => dyno_steps.push((at(at_s), rpm)),
         }
     }
 
@@ -306,7 +311,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             speed_source,
             tcu_icpt_kind: can_icpt_kind,
             tcu_icpt_t: can_icpt_t,
-            vnt_cmd, p_set
+            vnt_cmd, p_set, p_em_est
         }, 6.0)
             .task(Rate::Ms10, Box::new(WarmupComp::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
@@ -315,6 +320,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .task(Rate::Ms10, Box::new(DriverDemand::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(IdleTask::new(0.0)))
             .task(Rate::Ms10, Box::new(AirEstimator::di_diesel_1_6()))
+            .task(Rate::Ms10, Box::new(ExhaustModel::ea288()))
             .task(Rate::Ms10, Box::new(SmokeLimiter::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(RevLimiter::ea288()))
             .task(Rate::Ms10, Box::new(TcuIntervention))
@@ -391,6 +397,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("icpt_kind".into(), icpt_kind),
              ("vnt_pos".into(), vnt_pos),
              ("p_set".into(), p_set),
+             ("t_dyno".into(), t_dyno),
+             ("p_em_est".into(), p_em_est),
         ],
         SimDuration::from_millis(10),
     )?));
@@ -421,6 +429,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ]})
     ));
     k.add(Box::new(VntActuator::ea288(VntActuatorPorts { cmd: vnt_cmd, pos: vnt_pos }, 1.0)));
+    
+    if !dyno_steps.is_empty() {
+        k.add(Box::new(Dyno::new(dyno_steps, DynoPorts { omega, t_dyno })));
+    }
 
 
     let end = SimTime::ZERO + SimDuration::from_millis(sc.duration_s * 1000);

@@ -14,3 +14,4 @@ pub mod road_load;
 pub mod gearbox;
 pub mod clutch;
 pub mod vnt_actuator;
+pub mod dyno;

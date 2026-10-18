@@ -14,7 +14,12 @@ use super::{EcuState, Task};
 /// sign.
 pub struct BoostControl {
     pub model: TorqueModel,
-    pub p_set_map: Map2d,   // Pa absolute over (rpm, demanded load)
+    pub afr_tgt_map: Map1d, // target air-fuel ratio over demanded load
+    pub p_max_map: Map1d,   // Pa, boost ceiling over rpm: turbo speed protection
+    pub p_min: f64,         // Pa
+    pub eta_vol_cal: f64,
+    pub displacement: f64,  // m³
+    pub cylinders: f64,
     pub vnt_ff_map: Map2d,  // 0 closed .. 1 open, over (rpm, demanded load)
     pub kp: f64,            // 1/kPa
     pub ki: f64,            // 1/(kPa·s)
@@ -35,14 +40,6 @@ impl BoostControl {
     pub fn ea288() -> Self {
         let rpm = vec![800.0, 1250.0, 1750.0, 2500.0, 3250.0, 4000.0, 4600.0];
         let load = vec![0.0, 0.25, 0.5, 0.75, 1.0];     // demanded fuel / q_max
-        // row major: one row per load, columns across rpm. kPa absolute
-        let p_set_kpa = [
-            102.0, 102.0, 103.0, 105.0, 108.0, 110.0, 110.0,
-            103.0, 110.0, 125.0, 140.0, 150.0, 150.0, 145.0,
-            105.0, 130.0, 165.0, 190.0, 200.0, 195.0, 185.0,
-            108.0, 150.0, 210.0, 240.0, 245.0, 235.0, 215.0,
-            110.0, 175.0, 250.0, 270.0, 270.0, 245.0, 210.0,
-        ];
         // Steady state vane position for each setpoint, from the turbo's own power balance. The PI
         // corrects the rest
         let vnt_ff = vec![
@@ -54,7 +51,6 @@ impl BoostControl {
         ];
         BoostControl {
             model: TorqueModel::ea288_cal(),
-            p_set_map: Map2d::new(rpm.clone(), load.clone(), p_set_kpa.iter().map(|p| p * 1e3).collect()),
             vnt_ff_map: Map2d::new(rpm, load, vnt_ff),
             kp: 0.006,
             ki: 0.006,
@@ -72,6 +68,17 @@ impl BoostControl {
             p_prev: 101325.0,
             dpdt: 0.0,
             last: None,
+            // Full load 5% above the smoke limit (18), so steady state fuel isn't air limited; leaner at part load
+            afr_tgt_map: Map1d::new(vec![0.0, 0.25, 0.5, 0.75, 1.0], vec![30.0, 26.0, 22.0, 20.0, 19.0]),
+            // Keeps the turbo near 200k rpm at most, from the full_load dyno run
+            p_max_map: Map1d::new(
+                vec![1250.0, 2000.0, 3250.0, 4000.0, 4500.0],
+                vec![250e3, 265e3, 265e3, 245e3, 225e3],
+            ),
+            p_min: 103e3,
+            eta_vol_cal: 0.88,
+            displacement: 1.598e-3,
+            cylinders: 4.0,
         }
     }
 }
@@ -100,7 +107,12 @@ impl Task for BoostControl {
         let q_dem = if t_drv > 0.0 { self.model.q_for(s.n_eng, t_drv + s.t_loss) } else { s.q_cmd };
         let load = (q_dem / self.model.q_max).clamp(0.0, 1.0);
 
-        s.p_set = self.p_set_map.get(s.n_eng, load);
+        // Air the demanded fuel needs at the target AFR, back through speed density to manifold pressure
+        const R_AIR: f64 = 287.05;
+        let m_air_req = self.afr_tgt_map.get(load) * q_dem * 1e-6 * self.cylinders * s.n_eng / 120.0;
+        let p_req = m_air_req * 120.0 * R_AIR * s.t_im_meas / (self.eta_vol_cal * self.displacement * s.n_eng.max(500.0));
+        s.p_set = p_req.clamp(self.p_min, self.p_max_map.get(s.n_eng));
+
         let ff = self.vnt_ff_map.get(s.n_eng, load);
         let vnt_min = self.vnt_min_map.get(s.n_eng);
 

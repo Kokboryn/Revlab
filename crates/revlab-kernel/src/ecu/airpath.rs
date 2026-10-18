@@ -90,3 +90,55 @@ impl Task for SmokeLimiter {
         };
     }
 }
+
+/// Exhaust manifold pressure, modeled. There is no sensor upstream of the turbine, so the ECU computes
+/// it the way the plant makes it: turbine flow (air + fuel) through an orifice whose area follows the
+/// vane demand, at an exhaust temperature mapped over fuel quantity. Geometry and gas constants are
+/// calibration copies, close to the real turbo but not identical
+pub struct ExhaustModel {
+    pub a_t_min: f64,       // m²
+    pub a_t_max: f64,
+    pub gamma: f64,
+    pub r_exh: f64,
+    pub t_em_base: f64,     // K at zero fuel
+    pub t_em_per_mg: f64,   // K per mg/stroke
+    pub t_em_max: f64,
+    pub cylinders: f64,
+    pub p_amb: f64,         // Pa; no baro sensor modeled yet
+}
+
+impl ExhaustModel {
+    pub fn ea288() -> Self {
+        ExhaustModel {
+            a_t_min: 1.25e-4, a_t_max: 6.3e-4, gamma: 1.35, r_exh: 287.0, t_em_base: 430.0,
+            t_em_per_mg: 13.0, t_em_max: 1060.0, cylinders: 4.0, p_amb: 101_325.0,
+        }
+    }
+
+    fn psi(&self, pr: f64) -> f64 {
+        let g = self.gamma;
+        let pr_crit = (2.0 / (g + 1.0)).powf(g / (g - 1.0));
+        let pr = pr.clamp(pr_crit, 1.0);
+        (2.0 * g / (g - 1.0) * (pr.powf(2.0 / g) - pr.powf((g + 1.0) / g))).max(0.0).sqrt()
+    }
+}
+
+impl Task for ExhaustModel {
+    fn name(&self) -> &'static str { "ExhaustModel" }
+
+    fn run(&mut self, s: &mut EcuState) {
+        let q = s.q_cmd.max(0.0);
+        let m_t = s.m_air_est + q * 1e-6 * self.cylinders * s.n_eng / 120.0;
+        let t_em = (self.t_em_base + self.t_em_per_mg * q).min(self.t_em_max);
+        let a = self.a_t_min + s.vnt_cmd.clamp(0.0, 1.0) * (self.a_t_max - self.a_t_min);
+        let k = a / (self.r_exh * t_em).sqrt();
+        // Orifice flow rises monotonically with upstream pressure, so bisection always lands
+        let (mut lo, mut hi) = (self.p_amb, 6.0 * self.p_amb);
+        if k * hi * self.psi(self.p_amb / hi) < m_t { s.p_em_est = hi; return; }
+        for _ in 0..30 {
+            let mid = 0.5 * (lo + hi);
+            if k * mid * self.psi(self.p_amb / mid) < m_t { lo = mid; } else { hi = mid; }
+        }
+        s.p_em_est = 0.5 * (lo + hi);
+    }
+}

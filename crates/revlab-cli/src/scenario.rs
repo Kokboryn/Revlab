@@ -13,6 +13,7 @@ pub enum Event {
     Brake      { at_s: f64, cmd: f64 },
     TipUp      { at_s: f64 },
     TipDown    { at_s: f64 },
+    Dyno       { at_s: f64, rpm: f64 },         // dynamometer speed hold; 0 releases
 }
 
 pub struct Scenario {
@@ -45,6 +46,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("coast_down", "100 km/h in 5th, lift, tip down through 4-3-2-1 while coasting"),
     ("lift_up", "tip up with the pedal lifted (1-2, 3-4), with a power on 2-3 between for contrast"),
     ("d_mixed", "D: gentle launch, light cruise, kickdown at 40 s, lift at 50 s and coast"),
+    ("full_load", "engine on the dyno in N, full pedal, held at 1250-4500 rpm in 250 rpm steps of 8 s - the torque curve"),
 ];
 
 impl Scenario {
@@ -77,12 +79,12 @@ impl Scenario {
             "upshifts"      => (80, 0.0, 1, vec![
                 Event::Lever { at_s: 2.0, lever: Lever::Manual },
                 Event::Pedal { at_s: 3.0, position: 1.0 },
-                Event::TipUp { at_s: 7.0 },     // ~3200 rpm in 1st, per top_speed
-                Event::TipUp { at_s: 12.0 },
-                Event::TipUp { at_s: 20.0 },
-                Event::TipUp { at_s: 31.0 },
-                Event::TipUp { at_s: 45.0 },
-                Event::TipUp { at_s: 62.0 },
+                Event::TipUp { at_s: 5.6 },     // 1-2
+                Event::TipUp { at_s: 8.6 },     // 2-3
+                Event::TipUp { at_s: 12.8 },    // 3-4
+                Event::TipUp { at_s: 18.9 },    // 4-5
+                Event::TipUp { at_s: 31.0 },    // 5-6
+                Event::TipUp { at_s: 50.0 },    // 6-7, ~3900 rpm
             ]),
             "kickdown"      => (20, 50.0, 5, vec![
                 Event::Lever { at_s: 0.0, lever: Lever::Manual },
@@ -118,6 +120,13 @@ impl Scenario {
                 Event::Pedal { at_s: 40.0, position: 1.0 },
                 Event::Pedal { at_s: 50.0, position: 0.0 },
             ]),
+            "full_load"     => (118, 0.0, 0, {
+                let mut ev = vec![Event::Pedal { at_s: 2.0, position: 1.0 }];
+                for i in 0..14 {
+                    ev.push(Event::Dyno { at_s: 2.0 + 8.0 * i as f64, rpm: 1250.0 + 250.0 * i as f64 });
+                }
+                ev
+            }),
             _ => return None,
         };
         let about = NAMES.iter().find(|(k,_)| *k==n).map(|(_, v)| *v)?;

@@ -63,6 +63,7 @@ pub struct EnginePorts {
     pub p_em: Port,         // exhaust manifold: what the pistons push the exhaust out against
     pub t_im: Port,
     pub t_load: Port,       // scripted external load, from LoadProfile
+    pub t_dyno: Port,       // dynamometer absorber, test bench only
     pub t_c1: Port,         // K1 reaction, odd gears
     pub t_c2: Port,         // K2 reaction, even gears
     pub visc_mult: Port,
@@ -142,7 +143,8 @@ impl Component for Engine {
         let p_im = ctx.bus.get(self.ports.p_im);
         let t_im = ctx.bus.get(self.ports.t_im);
         let p_em = ctx.bus.get(self.ports.p_em);
-        let t_load = ctx.bus.get(self.ports.t_load) + ctx.bus.get(self.ports.t_c1) + ctx.bus.get(self.ports.t_c2);
+        let t_load = ctx.bus.get(self.ports.t_load) + ctx.bus.get(self.ports.t_dyno) 
+            + ctx.bus.get(self.ports.t_c1) + ctx.bus.get(self.ports.t_c2);
         let visc = ctx.bus.get(self.ports.visc_mult).max(1.0);
         let t_net = self.indicated_torque(q) - self.friction_torque() * visc
             - self.pumping_torque(p_em, p_im) - t_load;

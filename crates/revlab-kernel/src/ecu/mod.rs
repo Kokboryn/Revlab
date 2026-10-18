@@ -73,6 +73,7 @@ pub struct EcuState {
     pub t_ect_c: f64,
     pub warmup_mult: f64,
     pub t_bias: f64,
+    pub p_em_est: f64,      // Pa, modeled exhaust manifold pressure
 }
 
 pub trait Task: Send {
@@ -112,6 +113,7 @@ pub struct EcuPorts {
     pub freeze: Port,
     pub t_bias: Port,
     pub speed_source: Port,
+    pub p_em_est: Port,
 }
 
 pub struct Ecu {
@@ -159,6 +161,7 @@ impl Ecu {
                 t_ect_c: 20.0,
                 warmup_mult: 1.0,
                 t_bias: 0.0,
+                p_em_est: 101_325.0,
             },
             tasks: Vec::new(),
             p,
@@ -241,5 +244,6 @@ impl Component for Ecu {
             diag::SpeedSource::Crank => 0.0,
             diag::SpeedSource::Cam => 1.0,
         });
+        ctx.bus.set(self.p.p_em_est, self.state.p_em_est);
     }
 }
