@@ -39,6 +39,12 @@ pub struct SpeedPlausibility {
     last_n: f64,
     last_t: Option<revlab_core::SimTime>,
     dn_dt: f64,                 // rpm/s, filtered
+    pub stale_s: f64,           // s, a reading frozen this long is a dead capture
+    last_run: Option<revlab_core::SimTime>,
+    last_crank: f64,
+    last_cam: f64,
+    crank_still_s: f64,
+    cam_still_s: f64,
 }
 
 impl Default for SpeedPlausibility {
@@ -50,6 +56,14 @@ impl Default for SpeedPlausibility {
             last_n: 0.0,
             last_t: None,
             dn_dt: 0.0,
+            // A healthy crank never repeats a reading for more than 10 ms; the cam holds up to 40 ms
+            // at idle, since it only updates every 180 degrees
+            stale_s: 0.15,
+            last_run: None,
+            last_crank: -1.0,
+            last_cam: -1.0,
+            crank_still_s: 0.0,
+            cam_still_s: 0.0,
         }
     }
 }
@@ -87,8 +101,42 @@ impl Task for SpeedPlausibility {
     fn name(&self) -> &'static str { "SpeedPlausibility" }
 
     fn run(&mut self, s: &mut EcuState) {
-        // Cannot compare signals that are not there. A stopped engine or an open circuit is not a correlation fault
-        if !s.crank_valid || !s.cam_valid {
+        let dt_run = self.last_run.map(|t0| (s.now - t0).as_secs_f64()).unwrap_or(0.0);
+        self.last_run = Some(s.now);
+
+        // --- capture freshness. A healthy speed signal is re-measured every edge and never repeats
+        // bit for bit; one that stops changing is a dead capture, whatever its valid flag says
+        self.crank_still_s = if s.n_crank == self.last_crank { self.crank_still_s + dt_run } else { 0.0 };
+        self.cam_still_s = if s.n_cam == self.last_cam { self.cam_still_s + dt_run } else { 0.0 };
+        self.last_crank = s.n_crank;
+        self.last_cam = s.n_cam;
+        let crank_ok = s.crank_valid && self.crank_still_s < self.stale_s;
+        let cam_ok = s.cam_valid && self.cam_still_s < self.stale_s;
+
+        // Both gone at once is a stopped engine, not a sensor fault
+        if !crank_ok && !cam_ok {
+            s.freeze_adaptation = true;
+            return;
+        }
+
+        // One gone: losing the signal is its own evidence. Debounce it as that sensor's fault
+        let (now, n) = (s.now.as_secs_f64(), s.n_eng);
+        if !crank_ok || !cam_ok {
+            if Self::debounce(&mut s.fault_mem[Sensor::Crank as usize], !crank_ok, self.confirm_count, n, now) {
+                s.speed_source = SpeedSource::Cam;
+            }
+            Self::debounce(&mut s.fault_mem[Sensor::Cam as usize], !cam_ok, self.confirm_count, n, now);
+        }
+
+        // A confirmed fault has been acted on: the trusted sensor is chosen, so the observer may follow
+        // it again. Re-voting against a condemned sensor would freeze the model for good and let it
+        // wander off
+        if s.fault_mem.iter().any(|e| e.state == DtcState::Confirmed) {
+            s.freeze_adaptation = false;
+            s.unattributable = false;
+            return;
+        }
+        if !crank_ok || !cam_ok {
             s.freeze_adaptation = true;
             return;
         }

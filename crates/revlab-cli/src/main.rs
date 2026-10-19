@@ -30,7 +30,7 @@ use revlab_kernel::plant::intake::IntakePorts;
 use revlab_kernel::plant::thermal::ThermalSystem;
 use revlab_kernel::plant::road_load::{RoadLoad, RoadLoadPar, RoadLoadPorts};
 use revlab_kernel::plant::gearbox::{Gearbox, GearboxPorts};
-use revlab_kernel::tcu::clutch_ctl::ClutchControl;
+use revlab_kernel::tcu::clutch_ctl::{ClutchControl, ClutchTorqueEst};
 use revlab_kernel::tcu::diag::ClutchThermal;
 use revlab_kernel::tcu::{self, Tcu, TcuPorts};
 use revlab_kernel::tcu::shift_ctl::ShiftControl;
@@ -166,6 +166,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let p_set: Port         = k.bus.alloc(101_325.0);
     let t_dyno: Port        = k.bus.alloc(0.0);
     let p_em_est: Port      = k.bus.alloc(101_325.0);
+    let t_clutch: Port        = k.bus.alloc(0.0);   // TCU's clutch torque estimate
+    let can_gear: Port        = k.bus.alloc(0.0);   // ...Gearbox_1 as the ECU receives it
+    let can_clutch_state: Port = k.bus.alloc(0.0);
+    let can_shift_phase: Port = k.bus.alloc(0.0);
+    let can_t_clutch: Port = k.bus.alloc(0.0);
+    let f_road_est: Port = k.bus.alloc(0.0);
+    let drive_state: Port = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -279,11 +286,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Tcu::new(TcuPorts {
             lever, n_eng: can_n_eng, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: can_n_wheel, pedal: can_pedal,
             t_eng: can_t_eng, brake, sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est1, t_disc_est2,
-            overheat, tip_up, tip_dn, shift_phase, icpt_kind, icpt_t
+            overheat, tip_up, tip_dn, shift_phase, icpt_kind, icpt_t, t_clutch, drive_state
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
             .task(tcu::Rate::Ms10, Box::new(ShiftControl::dq200()))
             .task(tcu::Rate::Ms10, Box::new(ClutchThermal::dq200()))
+            .task(tcu::Rate::Ms10, Box::new(ClutchTorqueEst::dq200()))
     ));
     k.add(Box::new(
         Ecu::new(EcuPorts {
@@ -311,7 +319,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             speed_source,
             tcu_icpt_kind: can_icpt_kind,
             tcu_icpt_t: can_icpt_t,
-            vnt_cmd, p_set, p_em_est
+            vnt_cmd, p_set, p_em_est,
+            tcu_gear: can_gear, tcu_clutch: can_clutch_state, tcu_shift: can_shift_phase,
+            tcu_t_clutch: can_t_clutch, f_road_est
         }, 6.0)
             .task(Rate::Ms10, Box::new(WarmupComp::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
@@ -399,6 +409,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("p_set".into(), p_set),
              ("t_dyno".into(), t_dyno),
              ("p_em_est".into(), p_em_est),
+             ("t_clutch".into(), t_clutch),
+             ("f_road_est".into(), f_road_est),
+             ("drive_state".into(), drive_state),
         ],
         SimDuration::from_millis(10),
     )?));
@@ -427,6 +440,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .frame(Frame { period: ms(10), offset: us(4700), signals: vec![
             Signal { src: icpt_kind, dst: can_icpt_kind, res: 1.0 },
             Signal { src: icpt_t, dst: can_icpt_t, res: 0.5 },      // Nm
+            Signal { src: gear, dst: can_gear, res: 1.0 },
+            Signal { src: drive_state, dst: can_clutch_state, res: 1.0 },
+            Signal { src: shift_phase, dst: can_shift_phase, res: 1.0 },
+            Signal { src: t_clutch, dst: can_t_clutch, res: 0.5 }, // Nm
         ]})
     ));
     k.add(Box::new(VntActuator::ea288(VntActuatorPorts { cmd: vnt_cmd, pos: vnt_pos }, 1.0)));

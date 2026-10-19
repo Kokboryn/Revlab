@@ -51,8 +51,8 @@ pub struct EcuState {
     pub unattributable: bool,
     pub fault_mem: [diag::FaultEntry; diag::N_SENSORS],
     pub degraded: bool,
-    pub q_cmd: f64,     // mg/stroke
-    pub t_arb: f64,     // Nm, arbitrated
+    pub q_cmd: f64,         // mg/stroke
+    pub t_arb: f64,         // Nm, arbitrated
     pub target_rpm: f64,
     pub p_im_meas: f64,
     pub t_im_meas: f64,
@@ -60,11 +60,16 @@ pub struct EcuState {
     pub q_smoke_limit: f64,
     pub t_loss: f64,
     pub t_ind_req: f64,
-    pub t_act: f64,     // Nm at the crank: what the engine actually makes, by the CUS's own model
-    pub tcu_icpt_kind: u8,     // TCU torque intervention: 0 none, 1 cut (ceiling), 2 raise (floor)
-    pub tcu_icpt_t: f64,        // Nm at the crank
-    pub p_set: f64,     // Pa, boost setpoint
-    pub vnt_cmd: f64,   // VNT position demand: 0 closed, 1 open
+    pub t_act: f64,         // Nm at the crank: what the engine actually makes, by the CUS's own model
+    pub tcu_icpt_kind: u8,  // TCU torque intervention: 0 none, 1 cut (ceiling), 2 raise (floor)
+    pub tcu_icpt_t: f64,    // Nm at the crank
+    pub tcu_gear: u8,       // engaged gear, from the TCU over CAN
+    pub tcu_clutch: u8,     // driveline as the TCU measures it: 0 open, 1 slipping, 2 locked
+    pub tcu_shift: u8,      // shift phase: 0 idle, 1 prepare, 2+ clutches handing over
+    pub tcu_t_clutch: f64,  // Nm, what the clutches take from the engine
+    pub f_road_est: f64,    // N, road force learned by the observer while the driveline is locked
+    pub p_set: f64,         // Pa, boost setpoint
+    pub vnt_cmd: f64,       // VNT position demand: 0 closed, 1 open
     pub pedal: f64,
     pub crank_valid: bool,
     pub cam_valid: bool,
@@ -98,6 +103,10 @@ pub struct EcuPorts {
     pub t_ect_c: Port,
     pub tcu_icpt_kind: Port,
     pub tcu_icpt_t: Port,
+    pub tcu_gear: Port,
+    pub tcu_clutch: Port,
+    pub tcu_shift: Port,
+    pub tcu_t_clutch: Port,
     // outputs
     pub q_cmd: Port,
     pub t_arb: Port,
@@ -114,6 +123,7 @@ pub struct EcuPorts {
     pub t_bias: Port,
     pub speed_source: Port,
     pub p_em_est: Port,
+    pub f_road_est: Port,
 }
 
 pub struct Ecu {
@@ -162,6 +172,11 @@ impl Ecu {
                 warmup_mult: 1.0,
                 t_bias: 0.0,
                 p_em_est: 101_325.0,
+                tcu_gear: 0,
+                tcu_clutch: 0,
+                tcu_shift: 0,
+                tcu_t_clutch: 0.0,
+                f_road_est: 0.0,
             },
             tasks: Vec::new(),
             p,
@@ -187,23 +202,31 @@ impl Component for Ecu {
         let rate = Rate::from_trig(trig);
 
         // --- input processing
-        self.state.now          = ctx.now;
-        self.state.n_crank      = ctx.bus.get(self.p.n_crank);
-        self.state.n_cam        = ctx.bus.get(self.p.n_cam);
-        self.state.target_rpm   = ctx.bus.get(self.p.speed_req);
-        self.state.p_im_meas    = ctx.bus.get(self.p.p_im);
-        self.state.t_im_meas    = ctx.bus.get(self.p.t_im);
-        self.state.pedal        = ctx.bus.get(self.p.in_pedal);
-        self.state.crank_valid  = ctx.bus.get(self.p.crank_valid) > 0.5;
-        self.state.cam_valid    = ctx.bus.get(self.p.cam_valid) > 0.5;
-        self.state.m_maf_meas   = ctx.bus.get(self.p.m_maf);
-        self.state.t_ect_c      = ctx.bus.get(self.p.t_ect_c) - 273.15;
-        self.state.tcu_icpt_kind = ctx.bus.get(self.p.tcu_icpt_kind).round().max(0.0) as u8;
-        self.state.tcu_icpt_t = ctx.bus.get(self.p.tcu_icpt_t);
+        self.state.now              = ctx.now;
+        self.state.n_crank          = ctx.bus.get(self.p.n_crank);
+        self.state.n_cam            = ctx.bus.get(self.p.n_cam);
+        self.state.target_rpm       = ctx.bus.get(self.p.speed_req);
+        self.state.p_im_meas        = ctx.bus.get(self.p.p_im);
+        self.state.t_im_meas        = ctx.bus.get(self.p.t_im);
+        self.state.pedal            = ctx.bus.get(self.p.in_pedal);
+        self.state.crank_valid      = ctx.bus.get(self.p.crank_valid) > 0.5;
+        self.state.cam_valid        = ctx.bus.get(self.p.cam_valid) > 0.5;
+        self.state.m_maf_meas       = ctx.bus.get(self.p.m_maf);
+        self.state.t_ect_c          = ctx.bus.get(self.p.t_ect_c) - 273.15;
+        self.state.tcu_icpt_kind    = ctx.bus.get(self.p.tcu_icpt_kind).round().max(0.0) as u8;
+        self.state.tcu_icpt_t       = ctx.bus.get(self.p.tcu_icpt_t);
+        self.state.tcu_gear         = ctx.bus.get(self.p.tcu_gear).round().max(0.0) as u8;
+        self.state.tcu_clutch       = ctx.bus.get(self.p.tcu_clutch).round().max(0.0) as u8;
+        self.state.tcu_shift        = ctx.bus.get(self.p.tcu_shift).round().max(0.0) as u8;
+        self.state.tcu_t_clutch     = ctx.bus.get(self.p.tcu_t_clutch);
 
         let n_new = match self.state.speed_source {
             diag::SpeedSource::Crank if self.state.crank_valid => Some(self.state.n_crank),
-            diag::SpeedSource::Cam   if self.state.cam_valid => Some(self.state.n_cam),
+            diag::SpeedSource::Cam if self.state.cam_valid => Some(self.state.n_cam),
+            // The selected sensor has lost its signal: fall back to the other at once. Holding the
+            // last reading leaves the governor blind, and the engine runs away
+            _ if self.state.cam_valid => Some(self.state.n_cam),
+            _ if self.state.crank_valid => Some(self.state.n_crank),
             _ => None
         };
         if let Some(n) = n_new {
@@ -245,5 +268,6 @@ impl Component for Ecu {
             diag::SpeedSource::Cam => 1.0,
         });
         ctx.bus.set(self.p.p_em_est, self.state.p_em_est);
+        ctx.bus.set(self.p.f_road_est, self.state.f_road_est);
     }
 }

@@ -109,3 +109,51 @@ impl Task for ClutchControl {
         else { ClutchState::Engaging };
     }
 }
+
+/// What the clutches take from the engine, and whether the driveline is open, slipping or locked, for
+/// the ECU. A slipping pack carries its capacity, signed by slip direction. A locked pack ties the
+/// engine to its shaft and carries whatever the slipping packs leave of the engine torque. Capacity
+/// is the same calibration ShiftControl uses, so wear and glaze show up as estimate error, as they
+/// would on a real TCU
+pub struct ClutchTorqueEst {
+    pub t_cap_est: f64,     // Nm at full clamp
+    pub slip_lock: f64,     // rpm, a pack locks below this...
+    pub slip_unlock: f64,   // ...and only lets go above this
+    locked: [bool; 2],
+}
+
+impl ClutchTorqueEst {
+    pub fn dq200() -> Self {
+        ClutchTorqueEst { t_cap_est: 320.0, slip_lock: 20.0, slip_unlock: 60.0, locked: [false; 2] }
+    }
+}
+
+impl Task for ClutchTorqueEst {
+    fn name(&self) -> &'static str { "ClutchTorqueEst" }
+
+    fn run(&mut self, s: &mut TcuState) {
+        let (mut t_slip, mut cap_locked) = (0.0, 0.0);
+        let (mut clamped, mut on_gear) = (false, false);
+        for k in 0..2 {
+            let c = s.cmd[k].clamp(0.0, 1.0);
+            if c <= 0.0 { self.locked[k] = false; continue; }
+            clamped = true;
+            let cap = self.t_cap_est * c * c;
+            let slip = s.n_eng - s.n_shaft[k];
+            // Hysteresis: engine speed over CAN is up to 10 ms old, so a fast transient shows as tens
+            // of rpm of apparent slip on a pack that never let go
+            self.locked[k] = slip.abs() < if self.locked[k] { self.slip_unlock } else { self.slip_lock };
+            if self.locked[k] {
+                cap_locked += cap;
+                on_gear |= s.gear >= 1 && s.eng[k] == s.gear;
+            } else {
+                t_slip += cap * slip.signum();
+            }
+        }
+        s.t_clutch = if cap_locked > 0.0 {
+            t_slip + (s.t_eng - t_slip).clamp(-cap_locked, cap_locked)
+        } else { t_slip };
+        // Locked means the car is part of the engine's inertia, which needs the lock on the engaged gear
+        s.drive_state = if on_gear { 2 } else if clamped { 1 } else { 0 };
+    }
+}

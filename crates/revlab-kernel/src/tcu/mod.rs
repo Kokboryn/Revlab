@@ -53,6 +53,7 @@ pub struct TcuState {
     pub shift_phase: u8,            // 0 idle, 1 prepare, 2 release, 3 torque, 4 inertia
     pub icpt_kind: u8,              // torque intervention to the ECU: 0 none, 1 cut, 2 raise
     pub icpt_t: f64,                // Nm at the crank
+    pub t_clutch: f64,              // Nm, torque the clutches take from the engine, estimated
     pub v_veh: f64,                 // km/h, from wheel speed
     pub pedal: f64,
     pub brake: f64,
@@ -61,6 +62,7 @@ pub struct TcuState {
     pub clutch_cmd: f64,            // 0..1, what the actuator is asked for
     pub t_disc_est: [f64; 2],            // K, the TCU's own thermal model, per pack
     pub overheat: bool,
+    pub drive_state: u8,        // measured: 0 open, 1 slipping, 2 locked on the engaged gear
 }
 
 pub trait Task: Send {
@@ -74,24 +76,24 @@ pub trait Task: Send {
 pub struct TcuPorts {
     // inputs
     pub lever: Port,
-    pub n_eng: Port,    // rpm, engine speed (CAN in a real car)
-    pub t_eng: Port,    // Nm, actual engine torque (Motor_1)
-    pub n_in1: Port,    // rpm, shaft 1 speed sensor, odd gears
-    pub n_in2: Port,    // rpm, shaft 2 speed sensor, even gears
-    pub eng1: Port,     // fork position sensor, shaft 1: gear engaged, 0 while moving
+    pub n_eng: Port,            // rpm, engine speed (CAN in a real car)
+    pub t_eng: Port,            // Nm, actual engine torque (Motor_1)
+    pub n_in1: Port,            // rpm, shaft 1 speed sensor, odd gears
+    pub n_in2: Port,            // rpm, shaft 2 speed sensor, even gears
+    pub eng1: Port,             // fork position sensor, shaft 1: gear engaged, 0 while moving
     pub eng2: Port,
-    pub n_wheel: Port,    // rpm, wheel speed sensor (ABS over CAN in a real car)
+    pub n_wheel: Port,          // rpm, wheel speed sensor (ABS over CAN in a real car)
     pub pedal: Port,
     pub brake: Port,
     pub tip_up: Port,
     pub tip_dn: Port,
     // outputs: actuators
-    pub sel1: Port,     // gear selected on shaft 1
-    pub sel2: Port,     // gear selected on shaft 2
-    pub cmd1: Port,     // K1 clamp
-    pub cmd2: Port,     // K2 clamp
+    pub sel1: Port,             // gear selected on shaft 1
+    pub sel2: Port,             // gear selected on shaft 2
+    pub cmd1: Port,             // K1 clamp
+    pub cmd2: Port,             // K2 clamp
     // outputs: status, for telemetry only
-    pub clutch_cmd: Port,   // command to whichever pack carries the engaged gear
+    pub clutch_cmd: Port,       // command to whichever pack carries the engaged gear
     pub gear: Port,
     pub clutch_state: Port,
     pub t_disc_est1: Port,
@@ -100,6 +102,8 @@ pub struct TcuPorts {
     pub shift_phase: Port,
     pub icpt_kind: Port,
     pub icpt_t: Port,
+    pub t_clutch: Port,
+    pub drive_state: Port,
 }
 
 pub struct Tcu {
@@ -131,6 +135,8 @@ impl Tcu {
                 shift_phase: 0,
                 icpt_kind: 0,
                 icpt_t: 0.0,
+                t_clutch: 0.0,
+                drive_state: 0,
             },
             tasks: Vec::new(),
             p,
@@ -207,5 +213,7 @@ impl Component for Tcu {
         ctx.bus.set(self.p.shift_phase, self.state.shift_phase as f64);
         ctx.bus.set(self.p.icpt_kind, self.state.icpt_kind as f64);
         ctx.bus.set(self.p.icpt_t, self.state.icpt_t);
+        ctx.bus.set(self.p.t_clutch, self.state.t_clutch);
+        ctx.bus.set(self.p.drive_state, self.state.drive_state as f64);
     }
 }

@@ -46,7 +46,13 @@ impl Task for IdleTask {
         let scale = if s.degraded { self.degraded_scale } else { 1.0 };
         let err = s.target_rpm - s.n_eng;
         let trial = self.integ + self.ki * scale * err * dt;
-        let u = self.t_ff + self.kp * err + trial;
+        // Creep: the TCU reports what the engaging clutch takes, so the floor carries it before the
+        // speed sags. Only with the pedal released: during a launch the TCU holds engine speed with
+        // the clutch, and a floor that followed the clutch would chase it upward
+        let t_creep = if s.pedal < 0.01 && s.tcu_clutch == 1 && s.tcu_shift == 0 {
+            s.tcu_t_clutch.clamp(0.0, 60.0)
+        } else { 0.0 };
+        let u = self.t_ff + t_creep + self.kp * err + trial;
         let t = u.clamp(self.t_min, self.t_max);
         // Integrate only while the floor is what the engine is getting, or when the engine sags below
         // idle. Above idle the driver's drag is in charge, and an integrator left running there winds
