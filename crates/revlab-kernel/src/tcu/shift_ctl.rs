@@ -164,10 +164,10 @@ impl Task for ShiftControl {
         let v_prev = self.v_f;
         self.v_f += (s.v_veh - self.v_f) * DT / 0.2;
         self.a_f += ((self.v_f - v_prev) / 3.6 / DT - self.a_f) * DT / 0.5;
-        
+
         // Road resistance: what the engine pushes against, less what goes into accelerating the car
         // and the engine's own inertia, reflected through the gear. Whatever exceeds a flat road's
-        // rolling and air drag is climb. Learned only with the gear locked, the brakes off and a 
+        // rolling and air drag is climb. Learned only with the gear locked, the brakes off and a
         // second clear of the last shift: that's where the force balance holds
         let i_g = self.ratios[g - 1];
         let r = self.r_wheel_est;
@@ -175,14 +175,15 @@ impl Task for ShiftControl {
         // Engine torque is instant, acceleration comes through two filters: lag the force to match
         self.f_drive_f += (s.t_eng * i_g * self.eta_est / r - self.f_drive_f) * DT / 0.7;
         let f_res = self.f_drive_f - m_eff * self.a_f;
-        if !shifting && s.clutch_state == ClutchState::Closed && s.brake < 0.01 && self.since_shift > 1.0 {
+        if !shifting && s.clutch_state == ClutchState::Closed && s.brake < 0.01 && self.since_shift > 1.0
+            && !s.e1_lost {
             let v = s.v_veh / 3.6;
             let f_flat = self.crr_est * self.mass_est * 9.81 + 0.6 * self.cda_est * v * v;
             let grade = (f_res - f_flat) / (self.mass_est * 9.81) * 100.0;
             s.grade_est += (grade - s.grade_est) * DT / 2.0;
         }
         // On a climb, upshift only into a gear that can still hold speed at this pedal: same engine
-        // torque, through the new ratio, against the same resistance. On the flat the check stays 
+        // torque, through the new ratio, against the same resistance. On the flat the check stays
         // out of the way
         let hill_hold = g < 7 && s.grade_est > self.grade_dead && {
             let i_up = self.ratios[g];
@@ -243,12 +244,14 @@ impl Task for ShiftControl {
                 let auto_go = self.want != 0 && self.want_t >= self.t_confirm && self.since_shift >= self.min_hold;
 
                 let manual = s.lever == Lever::Manual && closed;
-                let to = if manual && tipped && up_land >= self.n_up_min { g + 1 }
+                // Without Engine_1 the TCU can't see the engine through a handover: no new shifts
+                let to = if s.e1_lost { 0 }
+                    else if manual && tipped && up_land >= self.n_up_min { g + 1 }
                     else if manual && tipped_dn && dn_land <= self.n_dn_max { g - 1 }
                     else if auto_go { self.want }
                     else { 0 };
-                
-                
+
+
                 if to != 0 {
                     self.since_shift = 0.0;
                     self.want = 0;
@@ -329,7 +332,9 @@ impl Task for ShiftControl {
                 s.icpt_t = dir * t_est - self.j_eng_est * alpha;
                 // Feedforward from the engine's actual torque, live over CAN: whatever the ECU managed to
                 // deliver, the clutch carries that plus whatever moving the engine still needs
-                let t_ff = (dir * s.t_eng + self.j_eng_est * alpha * dir).max(0.0);
+                // A shift already runing when Engine_1 drops finishes on the torque it learned at release
+                let t_e = if s.e1_lost { dir * t_est } else { s.t_eng };
+                let t_ff = (dir * t_e + self.j_eng_est * alpha * dir).max(0.0);
                 let err = s.n_eng - n_ref;
                 self.i_n = (self.i_n + self.ki * err * dir * DT).clamp(-0.3, 0.3);
                 tgt[k] = 0.0;
@@ -363,7 +368,8 @@ impl Task for ShiftControl {
                     s.icpt_t = t_est + self.j_eng_est * alpha;
                 }
                 // Feedforward from live CAN torque: what the engine makes, less what moving it takes
-                let t_ff = (dir * s.t_eng - self.j_eng_est * alpha * dir).max(0.0);
+                let t_e = if s.e1_lost { dir * t_est } else { s.t_eng };
+                let t_ff = (dir * t_e - self.j_eng_est * alpha * dir).max(0.0);
                 let err = s.n_eng - n_ref;
                 self.i_n = (self.i_n + self.ki * err * dir * DT).clamp(-0.3, 0.3);
                 tgt[k] = ((t_ff / self.t_cap_est).sqrt() + dir * self.kp * err + self.i_n).clamp(0.0, 1.0);

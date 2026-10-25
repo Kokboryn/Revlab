@@ -68,6 +68,8 @@ pub struct EcuState {
     pub tcu_shift: u8,      // shift phase: 0 idle, 1 prepare, 2+ clutches handing over
     pub tcu_t_clutch: f64,  // Nm, what the clutches take from the engine
     pub f_road_est: f64,    // N, road force learned by the observer while the driveline is locked
+    pub gb1_lost: bool,             // Gearbox_1 timed out
+    pub gb1_dtc: diag::DtcState,    // stored lost-communication code for the TCU
     pub p_set: f64,         // Pa, boost setpoint
     pub vnt_cmd: f64,       // VNT position demand: 0 closed, 1 open
     pub pedal: f64,
@@ -107,6 +109,7 @@ pub struct EcuPorts {
     pub tcu_clutch: Port,
     pub tcu_shift: Port,
     pub tcu_t_clutch: Port,
+    pub gb1_ctr: Port,
     // outputs
     pub q_cmd: Port,
     pub t_arb: Port,
@@ -124,12 +127,14 @@ pub struct EcuPorts {
     pub speed_source: Port,
     pub p_em_est: Port,
     pub f_road_est: Port,
+    pub dtc_comm: Port,     // U0101, lost communication with the TCU
 }
 
 pub struct Ecu {
     state: EcuState,
     tasks: Vec<(Rate, Box<dyn Task>)>,
     p: EcuPorts,
+    rx_gb1: crate::can::RxMonitor,
 }
 
 impl Ecu {
@@ -177,9 +182,12 @@ impl Ecu {
                 tcu_shift: 0,
                 tcu_t_clutch: 0.0,
                 f_road_est: 0.0,
+                gb1_lost: false,
+                gb1_dtc: diag::DtcState::Passed,
             },
             tasks: Vec::new(),
             p,
+            rx_gb1: crate::can::RxMonitor::new(0.1),
         }
     }
 
@@ -219,6 +227,18 @@ impl Component for Ecu {
         self.state.tcu_clutch       = ctx.bus.get(self.p.tcu_clutch).round().max(0.0) as u8;
         self.state.tcu_shift        = ctx.bus.get(self.p.tcu_shift).round().max(0.0) as u8;
         self.state.tcu_t_clutch     = ctx.bus.get(self.p.tcu_t_clutch);
+        self.state.gb1_lost = self.rx_gb1.lost(ctx.bus.get(self.p.gb1_ctr), ctx.now);
+        if self.state.gb1_lost {
+            // Stale Gearbox_1 values are worse than none: a torque cut frozen mid-shift would hold
+            // the engine down indefinitely.
+            self.state.tcu_icpt_kind = 0;
+            self.state.tcu_icpt_t = 0.0;
+            self.state.tcu_gear = 0;
+            self.state.tcu_clutch = 0;
+            self.state.tcu_shift = 0;
+            self.state.tcu_t_clutch = 0.0;
+            self.state.gb1_dtc = diag::DtcState::Confirmed;
+        }
 
         let n_new = match self.state.speed_source {
             diag::SpeedSource::Crank if self.state.crank_valid => Some(self.state.n_crank),
@@ -269,5 +289,6 @@ impl Component for Ecu {
         });
         ctx.bus.set(self.p.p_em_est, self.state.p_em_est);
         ctx.bus.set(self.p.f_road_est, self.state.f_road_est);
+        ctx.bus.set(self.p.dtc_comm, if self.state.gb1_dtc == diag::DtcState::Confirmed { 2.0 } else { 0.0 });
     }
 }

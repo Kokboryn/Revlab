@@ -2,6 +2,9 @@ use revlab_kernel::sensors::Fault;
 use revlab_kernel::tcu::Lever;
 
 #[derive(Clone, Copy, Debug)]
+pub enum CanFrame { Engine1, Brake1, Gearbox1 }
+
+#[derive(Clone, Copy, Debug)]
 pub enum Event {
     CrankFault { at_s: f64, fault: Fault },
     CamFault   { at_s: f64, fault: Fault },
@@ -14,6 +17,7 @@ pub enum Event {
     TipUp      { at_s: f64 },
     TipDown    { at_s: f64 },
     Dyno       { at_s: f64, rpm: f64 },         // dynamometer speed hold; 0 releases
+    CanMute    { at_s: f64, frame: CanFrame, until_s: Option<f64> }, // sender goes quiet; None = for good
 }
 
 pub struct Scenario {
@@ -47,6 +51,9 @@ pub const NAMES: &[(&str, &str)] = &[
     ("lift_up", "tip up with the pedal lifted (1-2, 3-4), with a power on 2-3 between for contrast"),
     ("d_mixed", "D: gentle launch, light cruise, kickdown at 40 s, lift at 50 s and coast"),
     ("full_load", "engine on the dyno in N, full pedal, held at 1250-4500 rpm in 250 rpm steps of 8 s - the torque curve"),
+    ("can_engine1", "D, 50% pedal; Engine_1 silent 15-25 s, TCU holds its gear on shaft speed, then recovers"),
+    ("can_brake1", "D, 40% pedal; Brake_1 lost at 10 s, TCU takes road speed from the engaged shaft"),
+    ("can_gearbox1", "D, full pedal; Gearbox_1 lost at 5 s, ECU drops interventions, observer steps out")
 ];
 
 impl Scenario {
@@ -127,6 +134,21 @@ impl Scenario {
                 }
                 ev
             }),
+            "can_engine1"   => (40, 0.0, 1, vec![
+                Event::Lever { at_s: 2.0, lever: Lever::Drive },
+                Event::Pedal { at_s: 2.5, position: 0.5 },
+                Event::CanMute {at_s: 15.0, frame: CanFrame::Engine1, until_s: Some(25.0) },
+            ]),
+            "can_brake1"    => (30, 0.0, 1, vec![
+                Event::Lever { at_s: 2.0, lever: Lever::Drive },
+                Event::Pedal { at_s: 2.5, position: 0.4 },
+                Event::CanMute { at_s: 10.0, frame: CanFrame::Brake1, until_s: None },
+            ]),
+            "can_gearbox1"  => (30, 0.0, 1, vec![
+                Event::Lever { at_s: 2.0, lever: Lever::Drive },
+                Event::Pedal { at_s: 2.5, position: 1.0 },
+                Event::CanMute { at_s: 5.0, frame: CanFrame::Gearbox1, until_s: None },
+            ]),
             _ => return None,
         };
         let about = NAMES.iter().find(|(k,_)| *k==n).map(|(_, v)| *v)?;

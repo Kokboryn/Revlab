@@ -14,7 +14,7 @@ use revlab_kernel::telemetry::CsvLogger;
 use revlab_kernel::ecu::diag::{SpeedPlausibility, LimpMode};
 use revlab_kernel::ecu::observer::SpeedObserver;
 use revlab_kernel::sensors::cam_wheel::CamWheel;
-use scenario::{Scenario, Event, parse_args};
+use scenario::{Scenario, Event, CanFrame, parse_args};
 use revlab_kernel::plant::{environment::Environment, intake::IntakeManifold};
 use revlab_kernel::plant::load::LoadProfile;
 use revlab_kernel::plant::turbo::{Turbo, TurboPorts};
@@ -174,6 +174,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let f_road_est: Port = k.bus.alloc(0.0);
     let drive_state: Port = k.bus.alloc(0.0);
     let grade_est: Port = k.bus.alloc(0.0);
+    let e1_ctr: Port    = k.bus.alloc(0.0);     // rolling counters, as each receiver sees them
+    let b1_ctr: Port    = k.bus.alloc(0.0);
+    let gb1_ctr: Port   = k.bus.alloc(0.0);
+    let can_dtc: Port   = k.bus.alloc(0.0);     // TCU's stored lost-frame codes
+    let dtc_comm: Port    = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -232,6 +237,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut grade_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     let mut brake_steps: Vec<(SimTime, f64)> = vec![(SimTime::ZERO, 0.0)];
     let mut dyno_steps: Vec<(SimTime, f64)> = Vec::new();
+    let mut mute_e1: Vec<(SimTime, Option<SimTime>)> = Vec::new();
+    let mut mute_b1: Vec<(SimTime, Option<SimTime>)> = Vec::new();
+    let mut mute_gb1: Vec<(SimTime, Option<SimTime>)> = Vec::new();
     for e in &sc.events {
         let at = |s: f64| SimTime::ZERO + SimDuration::from_millis((s * 1000.0) as u64);
         match *e {
@@ -246,6 +254,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::Grade { at_s, rad }           => grade_steps.push((at(at_s), rad)),
             Event::Brake { at_s, cmd }           => brake_steps.push((at(at_s), cmd)),
             Event::Dyno { at_s, rpm }            => dyno_steps.push((at(at_s), rpm)),
+            Event::CanMute { at_s, frame, until_s } => {
+                let w = (at(at_s), until_s.map(at));
+                match frame {
+                    CanFrame::Engine1 => mute_e1.push(w),
+                    CanFrame::Brake1 => mute_b1.push(w),
+                    CanFrame::Gearbox1 => mute_gb1.push(w),
+                }
+            }
         }
     }
 
@@ -286,8 +302,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(
         Tcu::new(TcuPorts {
             lever, n_eng: can_n_eng, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: can_n_wheel, pedal: can_pedal,
-            t_eng: can_t_eng, brake, sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est1, t_disc_est2,
-            overheat, tip_up, tip_dn, shift_phase, icpt_kind, icpt_t, t_clutch, drive_state, grade_est
+            t_eng: can_t_eng, brake, sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state,
+            t_disc_est1, t_disc_est2, overheat, tip_up, tip_dn, shift_phase, icpt_kind, icpt_t, t_clutch,
+            drive_state, grade_est, e1_ctr, b1_ctr, can_dtc
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
             .task(tcu::Rate::Ms10, Box::new(ShiftControl::dq200()))
@@ -296,33 +313,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     k.add(Box::new(
         Ecu::new(EcuPorts {
-            n_crank: n_meas,
-            n_cam,
-            speed_req,
-            p_im: p_im_s,
-            t_im: t_im_s,
-            m_maf: m_maf_s,
-            q_cmd,
-            in_pedal: pedal,
-            t_arb,
-            dtc,
-            n_model,
-            q_lim,
-            m_air_est,
-            t_loss,
-            t_ind_req,
-            cam_valid,
-            crank_valid,
-            t_ect_c: t_cool_s,
-            freeze,
-            t_bias,
-            t_act,
-            speed_source,
-            tcu_icpt_kind: can_icpt_kind,
-            tcu_icpt_t: can_icpt_t,
-            vnt_cmd, p_set, p_em_est,
-            tcu_gear: can_gear, tcu_clutch: can_clutch_state, tcu_shift: can_shift_phase,
-            tcu_t_clutch: can_t_clutch, f_road_est
+            n_crank: n_meas, n_cam, speed_req, p_im: p_im_s, t_im: t_im_s, m_maf: m_maf_s, q_cmd,
+            in_pedal: pedal, t_arb, dtc, n_model, q_lim, m_air_est, t_loss, t_ind_req, cam_valid,
+            crank_valid, t_ect_c: t_cool_s, freeze, t_bias, t_act, speed_source, tcu_icpt_kind: can_icpt_kind,
+            tcu_icpt_t: can_icpt_t, vnt_cmd, p_set, p_em_est, tcu_gear: can_gear, tcu_clutch: can_clutch_state,
+            tcu_shift: can_shift_phase, tcu_t_clutch: can_t_clutch, f_road_est, gb1_ctr, dtc_comm
         }, 6.0)
             .task(Rate::Ms10, Box::new(WarmupComp::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
@@ -415,6 +410,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("drive_state".into(), drive_state),
              ("grade_est".into(), grade_est),
              ("grade".into(), grade),
+             ("can_dtc".into(), can_dtc),
+             ("u0101".into(), dtc_comm),
         ],
         SimDuration::from_millis(10),
     )?));
@@ -424,30 +421,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     k.add(Box::new(LoadProfile::new(lever_steps, lever)));
     k.add(Box::new(LoadProfile::new(tip_up_steps, tip_up)));
     k.add(Box::new(LoadProfile::new(tip_dn_steps, tip_dn)));
-    // Powertrain CAN. Motor_1 is the ECU's broadcast, Brake_1 the ABS's; both at 10 ms, offset clear of
+    // Powertrain CAN. Engine_1 is the ECU's broadcast, Brake_1 the ABS's; both at 10 ms, offset clear of
     // the TCU's tasks so it always reads a frame that has already landed
     let ms = SimDuration::from_millis;
     let us = SimDuration::from_micros;
     k.add(Box::new(CanBus::new()
-        .frame(Frame { period: ms(10), offset: us(1500), signals: vec![
+        .frame(Frame::new(ms(10), us(1500), vec![
             Signal { src: n_meas, dst: can_n_eng, res: 0.25 },      // rpm
             Signal { src: pedal, dst: can_pedal, res: 0.004 },      // 0..1, 0.4% steps
             Signal { src: t_act, dst: can_t_eng, res: 0.5 },        // Nm, actual crank torque
-        ]})
+        ]).counter(e1_ctr).mute(mute_e1))
         // Brake_1: the ABS's broadcast. Wheel speed from the ABS ring, not the engine
-        .frame(Frame { period: ms(10), offset: us(2500), signals: vec![
+        .frame(Frame::new(ms(10), us(2500), vec![
             Signal { src: n_wheel_s, dst: can_n_wheel, res: 0.1 },     // rpm
-        ]})
-        // Gearbox_1: the TCU's broadcast. 4.7 ms is just after the TCU's 10 ms task and clear of every
-        // other rate and plant step
-        .frame(Frame { period: ms(10), offset: us(4700), signals: vec![
+        ]).counter(b1_ctr).mute(mute_b1))
+        // Gearbox_1: the TCU's broadcast, just after its 10 ms task
+        .frame(Frame::new(ms(10), us(4700), vec![
             Signal { src: icpt_kind, dst: can_icpt_kind, res: 1.0 },
             Signal { src: icpt_t, dst: can_icpt_t, res: 0.5 },      // Nm
             Signal { src: gear, dst: can_gear, res: 1.0 },
             Signal { src: drive_state, dst: can_clutch_state, res: 1.0 },
             Signal { src: shift_phase, dst: can_shift_phase, res: 1.0 },
             Signal { src: t_clutch, dst: can_t_clutch, res: 0.5 }, // Nm
-        ]})
+        ]).counter(gb1_ctr).mute(mute_gb1))
     ));
     k.add(Box::new(VntActuator::ea288(VntActuatorPorts { cmd: vnt_cmd, pos: vnt_pos }, 1.0)));
 

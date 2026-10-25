@@ -60,10 +60,13 @@ pub struct TcuState {
     pub gear: usize,                // engaged
     pub clutch_state: ClutchState,
     pub clutch_cmd: f64,            // 0..1, what the actuator is asked for
-    pub t_disc_est: [f64; 2],            // K, the TCU's own thermal model, per pack
+    pub t_disc_est: [f64; 2],       // K, the TCU's own thermal model, per pack
     pub overheat: bool,
     pub drive_state: u8,            // measured: 0 open, 1 slipping, 2 locked on the engaged gear
     pub grade_est: f64,             // %, climb from road resistance
+    pub e1_lost: bool,              // Engine_1 timed out
+    pub b1_lost: bool,              // Brake_1 timed out
+    pub can_dtc: u8,              // stored lost frame codes: bit 0 Engine_1, bit 1 Brake_1
 }
 
 pub trait Task: Send {
@@ -78,7 +81,7 @@ pub struct TcuPorts {
     // inputs
     pub lever: Port,
     pub n_eng: Port,            // rpm, engine speed (CAN in a real car)
-    pub t_eng: Port,            // Nm, actual engine torque (Motor_1)
+    pub t_eng: Port,            // Nm, actual engine torque (Engine_1)
     pub n_in1: Port,            // rpm, shaft 1 speed sensor, odd gears
     pub n_in2: Port,            // rpm, shaft 2 speed sensor, even gears
     pub eng1: Port,             // fork position sensor, shaft 1: gear engaged, 0 while moving
@@ -88,6 +91,8 @@ pub struct TcuPorts {
     pub brake: Port,
     pub tip_up: Port,
     pub tip_dn: Port,
+    pub e1_ctr: Port,
+    pub b1_ctr: Port,
     // outputs: actuators
     pub sel1: Port,             // gear selected on shaft 1
     pub sel2: Port,             // gear selected on shaft 2
@@ -106,6 +111,7 @@ pub struct TcuPorts {
     pub t_clutch: Port,
     pub drive_state: Port,
     pub grade_est: Port,
+    pub can_dtc: Port,
 }
 
 pub struct Tcu {
@@ -113,6 +119,10 @@ pub struct Tcu {
     tasks: Vec<(Rate, Box<dyn Task>)>,
     p: TcuPorts,
     r_wheel: f64,                   // m, coded rolling radius -- the TCU's belief, not the plant's tire
+    ratios: [f64; 7],               // overall ratios, for road speed from a shaft when Brake_1 is lost
+    rx_e1: crate::can::RxMonitor,
+    rx_b1: crate::can::RxMonitor,
+    n_eng_hold: f64,
 
 }
 
@@ -140,10 +150,17 @@ impl Tcu {
                 t_clutch: 0.0,
                 drive_state: 0,
                 grade_est: 0.0,
+                e1_lost: false,
+                b1_lost: false,
+                can_dtc: 0,
             },
             tasks: Vec::new(),
             p,
             r_wheel: 0.314,
+            ratios: [13.633, 7.777, 5.252, 4.011, 3.067, 2.413, 1.957],
+            rx_e1: crate::can::RxMonitor::new(0.1),
+            rx_b1: crate::can::RxMonitor::new(0.1),
+            n_eng_hold: 0.0,
         }
     }
 
@@ -195,6 +212,28 @@ impl Component for Tcu {
         self.state.tip_up = ctx.bus.get(self.p.tip_up).round().max(0.0) as u32;
         self.state.tip_dn = ctx.bus.get(self.p.tip_dn).round().max(0.0) as u32;
 
+        // --- lost frames: substitute what the TCU can measure itself
+        self.state.e1_lost = self.rx_e1.lost(ctx.bus.get(self.p.e1_ctr), ctx.now);
+        self.state.b1_lost = self.rx_b1.lost(ctx.bus.get(self.p.b1_ctr), ctx.now);
+        if self.state.e1_lost { self.state.can_dtc |= 1; }
+        if self.state.b1_lost { self.state.can_dtc |= 2; }
+        let g = self.state.gear;
+        let k_g = if g % 2 == 1 { 0 } else { 1 };
+        let on_gear = g >= 1 && self.state.eng[k_g] == g;
+        if self.state.e1_lost {
+            // The shaft of a closed clutch turns with the engine; otherwise the last good value is all there is
+            self.state.n_eng = if on_gear && self.state.clutch_state == ClutchState::Closed {
+                self.state.n_shaft[k_g]
+            } else { self.n_eng_hold };
+            // Unknown: Release falls back to finding the slip point
+            self.state.t_eng = 0.0;
+        }
+        self.n_eng_hold = self.state.n_eng;
+        if self.state.b1_lost && on_gear {
+            let wheel_rpm = self.state.n_shaft[k_g] / self.ratios[g - 1];
+            self.state.v_veh = wheel_rpm * 2.0 * PI / 60.0 * self.r_wheel * 3.6;
+        }
+
         // --- application
         for (r, t) in self.tasks.iter_mut() {
             if *r == rate { t.run(&mut self.state); }
@@ -219,5 +258,6 @@ impl Component for Tcu {
         ctx.bus.set(self.p.t_clutch, self.state.t_clutch);
         ctx.bus.set(self.p.drive_state, self.state.drive_state as f64);
         ctx.bus.set(self.p.grade_est, self.state.grade_est);
+        ctx.bus.set(self.p.can_dtc, self.state.can_dtc as f64);
     }
 }

@@ -48,8 +48,8 @@ impl Task for ClutchControl {
         let mut err = 0.0;          // stays zero unless the speed loop is in charge
         let mut target = match (s.lever, s.gear) {
             (lever, g) if lever.drives() && g >= 1 => {
-                if s.n_in < 50.0 && s.pedal < 0.02 {
-                    0.0                             // stopped, pedal up: creep later, open for now
+                if s.n_in < 50.0 && (s.pedal < 0.02 || s.e1_lost) {
+                    0.0                             // stopped, pedal up, or blind to engine speed, where a launch can't be guarded
                 } else if g >= 2 || (s.n_in > s.n_eng - self.lock_slip && s.n_in > 300.0) {
                     // Launch control is a 1st gear strategy. In any higher gear the car is already
                     // moving, so engagement just closes the clutch
@@ -69,7 +69,7 @@ impl Task for ClutchControl {
         // Creep. A real automatic holds the clutch at its touch point in D once the brake is released,
         // which is why it crawls forward on the flat -- and why it only rolls back a little on a gradient
         // instead of freewheeling away.
-        if s.lever.drives() && s.gear >= 1 && s.brake < 0.05 {
+        if s.lever.drives() && s.gear >= 1 && s.brake < 0.05 && !s.e1_lost  {
             target = target.max(self.creep_cmd)
         }
 

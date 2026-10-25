@@ -65,6 +65,14 @@ impl Task for SpeedObserver {
         };
         self.last = Some(s.now);
         if dt <= 0.0 || dt > 0.5 { return }
+        
+        // Without Gearbox_1 the driveline is unknown, and a model guessing at it is no third opinion.
+        // Track the sensor and stay out of vote until the frame is back
+        if s.gb1_lost {
+            s.n_model = s.n_eng;
+            s.model_valid = false;
+            return;
+        }
 
         // --- driveline state, from the TCU over CAN. Prepare still runs on the old gear, locked
         let g = s.tcu_gear as usize;
