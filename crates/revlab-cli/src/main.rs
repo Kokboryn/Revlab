@@ -173,6 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let can_t_clutch: Port = k.bus.alloc(0.0);
     let f_road_est: Port = k.bus.alloc(0.0);
     let drive_state: Port = k.bus.alloc(0.0);
+    let grade_est: Port = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -286,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Tcu::new(TcuPorts {
             lever, n_eng: can_n_eng, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: can_n_wheel, pedal: can_pedal,
             t_eng: can_t_eng, brake, sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state, t_disc_est1, t_disc_est2,
-            overheat, tip_up, tip_dn, shift_phase, icpt_kind, icpt_t, t_clutch, drive_state
+            overheat, tip_up, tip_dn, shift_phase, icpt_kind, icpt_t, t_clutch, drive_state, grade_est
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
             .task(tcu::Rate::Ms10, Box::new(ShiftControl::dq200()))
@@ -412,6 +413,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("t_clutch".into(), t_clutch),
              ("f_road_est".into(), f_road_est),
              ("drive_state".into(), drive_state),
+             ("grade_est".into(), grade_est),
+             ("grade".into(), grade),
         ],
         SimDuration::from_millis(10),
     )?));

@@ -62,7 +62,8 @@ pub struct TcuState {
     pub clutch_cmd: f64,            // 0..1, what the actuator is asked for
     pub t_disc_est: [f64; 2],            // K, the TCU's own thermal model, per pack
     pub overheat: bool,
-    pub drive_state: u8,        // measured: 0 open, 1 slipping, 2 locked on the engaged gear
+    pub drive_state: u8,            // measured: 0 open, 1 slipping, 2 locked on the engaged gear
+    pub grade_est: f64,             // %, climb from road resistance
 }
 
 pub trait Task: Send {
@@ -104,6 +105,7 @@ pub struct TcuPorts {
     pub icpt_t: Port,
     pub t_clutch: Port,
     pub drive_state: Port,
+    pub grade_est: Port,
 }
 
 pub struct Tcu {
@@ -137,6 +139,7 @@ impl Tcu {
                 icpt_t: 0.0,
                 t_clutch: 0.0,
                 drive_state: 0,
+                grade_est: 0.0,
             },
             tasks: Vec::new(),
             p,
@@ -215,5 +218,6 @@ impl Component for Tcu {
         ctx.bus.set(self.p.icpt_t, self.state.icpt_t);
         ctx.bus.set(self.p.t_clutch, self.state.t_clutch);
         ctx.bus.set(self.p.drive_state, self.state.drive_state as f64);
+        ctx.bus.set(self.p.grade_est, self.state.grade_est);
     }
 }

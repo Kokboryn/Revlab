@@ -62,6 +62,14 @@ pub struct ShiftControl {
     pub kd_land: f64,               // rpm a kickdown step may land at, at most
     pub t_confirm: f64,             // s a map request must persist before it is acted on
     pub min_hold: f64,              // s in a gear before the map may shift again
+    pub mass_est: f64,              // kg, vehicle with driver, the TCU's calibration
+    pub r_wheel_est: f64,           // m, coded rolling radius
+    pub eta_est: f64,               // driveline efficiency
+    pub crr_est: f64,               // rolling resistance coefficient
+    pub cda_est: f64,               // m², drag area
+    pub grade_dead: f64,            // %, climb below this is treated as estimate error
+    pub a_hold: f64,                // m/s², on a climb the next gear must still manage this
+    pub n_hill_max: f64,            // rpm, above this an upshift goes regardless: no camping on the limiter
     phase: Phase,
     i_n: f64,
     seen_up: u32,
@@ -72,6 +80,7 @@ pub struct ShiftControl {
     since_shift: f64,
     v_f: f64,                       // km/h, filtered road speed
     a_f: f64,                       // m/s², filtered acceleration
+    f_drive_f: f64,                 // N, drive force lagged to match a_f
     primed: bool,
     cmd: [f64; 2],
 }
@@ -101,6 +110,14 @@ impl ShiftControl {
             kd_land: 3800.0,
             t_confirm: 0.2,
             min_hold: 1.0,
+            mass_est: 1550.0,
+            r_wheel_est: 0.314,
+            eta_est: 0.92,
+            crr_est: 0.011,
+            cda_est: 0.62,
+            grade_dead: 2.0,
+            a_hold: 0.0,
+            n_hill_max: 4300.0,
             phase: Phase::Idle,
             i_n: 0.0,
             seen_up: 0,
@@ -111,6 +128,7 @@ impl ShiftControl {
             since_shift: 0.0,
             v_f: 0.0,
             a_f: 0.0,
+            f_drive_f: 0.0,
             primed: false,
             cmd: [0.0; 2],
         }
@@ -146,6 +164,31 @@ impl Task for ShiftControl {
         let v_prev = self.v_f;
         self.v_f += (s.v_veh - self.v_f) * DT / 0.2;
         self.a_f += ((self.v_f - v_prev) / 3.6 / DT - self.a_f) * DT / 0.5;
+        
+        // Road resistance: what the engine pushes against, less what goes into accelerating the car
+        // and the engine's own inertia, reflected through the gear. Whatever exceeds a flat road's
+        // rolling and air drag is climb. Learned only with the gear locked, the brakes off and a 
+        // second clear of the last shift: that's where the force balance holds
+        let i_g = self.ratios[g - 1];
+        let r = self.r_wheel_est;
+        let m_eff = self.mass_est + self.j_eng_est * i_g * i_g / (r * r);
+        // Engine torque is instant, acceleration comes through two filters: lag the force to match
+        self.f_drive_f += (s.t_eng * i_g * self.eta_est / r - self.f_drive_f) * DT / 0.7;
+        let f_res = self.f_drive_f - m_eff * self.a_f;
+        if !shifting && s.clutch_state == ClutchState::Closed && s.brake < 0.01 && self.since_shift > 1.0 {
+            let v = s.v_veh / 3.6;
+            let f_flat = self.crr_est * self.mass_est * 9.81 + 0.6 * self.cda_est * v * v;
+            let grade = (f_res - f_flat) / (self.mass_est * 9.81) * 100.0;
+            s.grade_est += (grade - s.grade_est) * DT / 2.0;
+        }
+        // On a climb, upshift only into a gear that can still hold speed at this pedal: same engine
+        // torque, through the new ratio, against the same resistance. On the flat the check stays 
+        // out of the way
+        let hill_hold = g < 7 && s.grade_est > self.grade_dead && {
+            let i_up = self.ratios[g];
+            let m_up = self.mass_est + self.j_eng_est * i_up * i_up / (r * r);
+            (self.f_drive_f * i_up / i_g - f_res) / m_up < self.a_hold
+        };
 
         // Shift map: lines in shaft rpm of the current gear against pedal
         let p = s.pedal.clamp(0.0, 1.0);
@@ -190,7 +233,8 @@ impl Task for ShiftControl {
                 // box would hunt between the two
                 let ask = if s.lever == Lever::Drive && closed {
                     let kick = p >= self.kd_pedal && dn_land <= self.kd_land;
-                    if g < 7 && s.n_in > n_up && up_land >= n_dn + self.land_margin { g + 1 }
+                    if g < 7 && s.n_in > n_up && up_land >= n_dn + self.land_margin
+                        && (!hill_hold || s.n_in > self.n_hill_max) { g + 1 }
                     else if g > 1 && (s.n_in < n_dn || kick) && dn_land <= self.n_dn_max { g - 1 }
                     else { 0 }
                 } else { 0 };
@@ -203,6 +247,8 @@ impl Task for ShiftControl {
                     else if manual && tipped_dn && dn_land <= self.n_dn_max { g - 1 }
                     else if auto_go { self.want }
                     else { 0 };
+                
+                
                 if to != 0 {
                     self.since_shift = 0.0;
                     self.want = 0;
