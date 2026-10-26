@@ -10,7 +10,7 @@ use revlab_kernel::plant::{friction::ChenFlynn, fuel::Fuel, geometry::Geometry};
 use revlab_kernel::sensors::{crank_wheel::CrankWheel};
 use revlab_kernel::ecu::{Ecu, EcuPorts, Rate, idle::IdleTask};
 use revlab_kernel::ecu::torque::{TorqueArbiter, TorqueToFuel, TcuIntervention};
-use revlab_kernel::telemetry::CsvLogger;
+use revlab_kernel::telemetry::{CsvLogger, UdpStreamer};
 use revlab_kernel::ecu::diag::{SpeedPlausibility, LimpMode};
 use revlab_kernel::ecu::observer::SpeedObserver;
 use revlab_kernel::sensors::cam_wheel::CamWheel;
@@ -338,9 +338,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .task(Rate::Ms10, Box::new(TorqueToFuel::ea288()))
             .task(Rate::Ms10, Box::new(BoostControl::ea288()))
     ));
-    k.add(Box::new(CsvLogger::new(
-        &out,
-        vec![("omega".into(), omega),
+        let channels: Vec<(String, Port)> =
+             vec![("omega".into(), omega),
              ("n_crank".into(), n_meas),
              ("n_cam".into(), n_cam),
              ("n_model".into(), n_model),
@@ -416,9 +415,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("can_dtc".into(), can_dtc),
              ("u0101".into(), dtc_comm),
              ("t_no_icpt".into(), t_no_icpt),
-        ],
-        SimDuration::from_millis(10),
-    )?));
+        ];
+    k.add(Box::new(CsvLogger::new(&out, channels.clone(), SimDuration::from_millis(10))?));
 
     k.add(Box::new(LoadProfile::new(grade_steps, grade)));
     k.add(Box::new(LoadProfile::new(brake_steps, brake)));
@@ -454,6 +452,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if !dyno_steps.is_empty() {
         k.add(Box::new(Dyno::new(dyno_steps, DynoPorts { omega, t_dyno })));
+    }
+
+    if let Some(port) = args.stream {
+        k.add(Box::new(UdpStreamer::new(port, channels.clone(), SimDuration::from_millis(20))));
     }
 
 

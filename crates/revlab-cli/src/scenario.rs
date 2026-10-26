@@ -164,10 +164,11 @@ pub struct Args {
     pub live: bool,
     pub wear: Option<String>,
     pub out: Option<String>,    // None = runs/<scenario>_s<seed>/run.csv
+    pub stream: Option<u16>,
 }
 
 pub fn parse_args() -> Result<Args, String> {
-    let mut a = Args { scenario: "crank_drift".into(), seed: 0xC0FFEE, out: None, plot: false, speed: None, live: false, wear: None };
+    let mut a = Args { scenario: "crank_drift".into(), seed: 0xC0FFEE, out: None, plot: false, speed: None, live: false, wear: None, stream: None };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         match k.as_str() {
@@ -183,6 +184,7 @@ pub fn parse_args() -> Result<Args, String> {
             "--speed" => a.speed = Some(it.next().ok_or("--speed needs a value")?.parse().map_err(|_| "--speed must be a number")?,),
             "--live" => a.live = true,
             "--wear" => a.wear = Some(it.next().ok_or("--wear needs a value")?),
+            "--stream" => a.stream = Some(it.next().ok_or("--stream needs a port")?.parse().map_err(|_| "--stream must be a port number")?,),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
