@@ -304,10 +304,13 @@ impl Task for ShiftControl {
                 let ko = shaft_of(to);
                 s.sel[ko] = to;
                 let x = (x + DT / self.t_torque).min(1.0);
-                // Capacity goes with clamp squared, so the clamps follow square roots: capacity crosses
-                // over linearly, with no hole in the middle for the engine to flare into
-                tgt[ko] = c_learn * x.sqrt();
-                tgt[k] = (c_learn * ((1.0 - x) * (1.0 + self.margin)).sqrt()).min(1.0);
+                // The handover follows what the engine makes now, scaled from the clamp learned at
+                // release, so the calibration it learned stays in. Bounded: a bad frame mustn't swing
+                // the clamps
+                let scale = if s.e1_lost { 1.0 } else { (s.t_eng.abs().max(5.0) / t_est).sqrt().clamp(0.7, 1.4) };
+                let c = {c_learn * scale}.min(1.0);
+                tgt[ko] = c * x.sqrt();
+                tgt[k] = (c * ((1.0 - x) * (1.0 + self.margin)).sqrt()).min(1.0);
                 if x >= 1.0 {
                     self.i_n = 0.0;
                     Phase::Inertia { to, t: 0.0, slip0: s.n_eng - s.n_shaft[ko], t_est }
@@ -329,7 +332,10 @@ impl Task for ShiftControl {
                 // clutch then only carries the torque already going through, and output torque stays level
                 // instead of surging or thumping
                 s.icpt_kind = if dir > 0.0 { 1 } else { 2 };
-                s.icpt_t = dir * t_est - self.j_eng_est * alpha;
+                // Sized from what the driver is asking for right now, not the torque frozen at release:
+                // the clutch then carries the driver's torque through the shift
+                let t_ref = if s.e1_lost { dir * t_est } else { s.t_drv };
+                s.icpt_t = t_ref - self.j_eng_est * alpha;
                 // Feedforward from the engine's actual torque, live over CAN: whatever the ECU managed to
                 // deliver, the clutch carries that plus whatever moving the engine still needs
                 // A shift already runing when Engine_1 drops finishes on the torque it learned at release
@@ -365,7 +371,8 @@ impl Task for ShiftControl {
                 // to ask for: the engine is already on fuel cut, and only friction brings it down
                 if dir > 0.0 {
                     s.icpt_kind = 2;
-                    s.icpt_t = t_est + self.j_eng_est * alpha;
+                    let t_ref = if s.e1_lost { t_est } else { s.t_drv };
+                    s.icpt_t = t_ref + self.j_eng_est * alpha;
                 }
                 // Feedforward from live CAN torque: what the engine makes, less what moving it takes
                 let t_e = if s.e1_lost { dir * t_est } else { s.t_eng };

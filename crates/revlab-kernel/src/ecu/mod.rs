@@ -61,6 +61,7 @@ pub struct EcuState {
     pub t_loss: f64,
     pub t_ind_req: f64,
     pub t_act: f64,         // Nm at the crank: what the engine actually makes, by the CUS's own model
+    pub t_no_icpt: f64,     // Nm at the crank, arbitration without the TCU's request
     pub tcu_icpt_kind: u8,  // TCU torque intervention: 0 none, 1 cut (ceiling), 2 raise (floor)
     pub tcu_icpt_t: f64,    // Nm at the crank
     pub tcu_gear: u8,       // engaged gear, from the TCU over CAN
@@ -128,6 +129,7 @@ pub struct EcuPorts {
     pub p_em_est: Port,
     pub f_road_est: Port,
     pub dtc_comm: Port,     // U0101, lost communication with the TCU
+    pub t_no_icpt: Port,
 }
 
 pub struct Ecu {
@@ -164,6 +166,7 @@ impl Ecu {
                 t_loss: 0.0,
                 t_ind_req: 0.0,
                 t_act: 0.0,
+                t_no_icpt: 0.0,
                 tcu_icpt_kind: 0,
                 tcu_icpt_t: 0.0,
                 p_set: 101325.0,
@@ -290,5 +293,6 @@ impl Component for Ecu {
         ctx.bus.set(self.p.p_em_est, self.state.p_em_est);
         ctx.bus.set(self.p.f_road_est, self.state.f_road_est);
         ctx.bus.set(self.p.dtc_comm, if self.state.gb1_dtc == diag::DtcState::Confirmed { 2.0 } else { 0.0 });
+        ctx.bus.set(self.p.t_no_icpt, self.state.t_no_icpt);
     }
 }

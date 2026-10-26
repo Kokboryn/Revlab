@@ -142,7 +142,13 @@ impl Task for ClutchTorqueEst {
             let slip = s.n_eng - s.n_shaft[k];
             // Hysteresis: engine speed over CAN is up to 10 ms old, so a fast transient shows as tens
             // of rpm of apparent slip on a pack that never let go
-            self.locked[k] = slip.abs() < if self.locked[k] { self.slip_unlock } else { self.slip_lock };
+            // A pack clamped far beyond what the engine makes can't hold a slip: it pulls the engine
+            // into sync within milliseconds. Count it locked once the slip is small, instead of waiting
+            // for a lagged engine speed to show sync, otherwise one frame of apparent slip reports
+            // the full capacity
+            let overclamped = cap > 2.0 * s.t_eng.abs() + 30.0;
+            let thresh = if self.locked[k] { self.slip_unlock } else { self.slip_lock };
+            self.locked[k] = slip.abs() < thresh || (overclamped && slip.abs() < self.slip_unlock);
             if self.locked[k] {
                 cap_locked += cap;
                 on_gear |= s.gear >= 1 && s.eng[k] == s.gear;

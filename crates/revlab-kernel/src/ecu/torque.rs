@@ -27,6 +27,26 @@ impl TorqueRequest {
     pub const INACTIVE: Self = TorqueRequest { kind: ReqKind::Target, value: 0.0, active: false };
 }
 
+/// One arbitration pass over the request slots, optionally leaving one source out
+fn arbitrate(reqs: &[TorqueRequest], skip: Option<Source>) -> f64 {
+    let act = |k :ReqKind| -> Option<f64> {
+        reqs.iter().enumerate()
+            .filter(|(i, r)| r.active && r.kind == k && skip.map_or(true, |x| *i != x as usize))
+            .map(|(_, r)| r.value)
+            .fold(None, |acc: Option<f64>, v| Some(match acc {
+                None => v,
+                Some(a) if k == ReqKind::MaxLimit => a.min(v),
+                Some(a) => a.max(v)
+            }))
+    };
+    // Order is load-bearing: targets, then minimum guarantees, then maximum limits LAST so protection
+    // can never be overridden
+    let mut t = act(ReqKind::Target).unwrap_or(0.0);
+    if let Some(lo) = act(ReqKind::MinLimit) { t = t.max(lo) }
+    if let Some(hi) = act(ReqKind::MaxLimit) { t = t.min(hi) }
+    t
+}
+
 /// Selects one torque from all pending requests
 pub struct TorqueArbiter;
 
@@ -34,22 +54,11 @@ impl Task for TorqueArbiter {
     fn name(&self) -> &'static str { "TorqueArbiter" }
 
     fn run(&mut self, s: &mut EcuState) {
-        let act = |k: ReqKind, s: &EcuState| -> Option<f64> {
-            s.reqs.iter()
-                .filter(|r| r.active && r.kind == k)
-                .map(|r| r.value)
-                .fold(None, |acc: Option<f64>, v| Some(match acc {
-                    None => v,
-                    Some(a) if k == ReqKind::MaxLimit => a.min(v),
-                    Some(a) => a.max(v),
-                }))
-        };
-
-        // Order is load-bearing: targets, then minimum guarantees, then maximum limits LAST so protection can never be overridden.
-        let mut t = act(ReqKind::Target, s).unwrap_or(0.0);
-        if let Some(lo) = act(ReqKind::MinLimit, s) { t = t.max(lo) }
-        if let Some(hi) = act(ReqKind::MaxLimit, s) { t = t.min(hi) }
-        s.t_arb = t;
+        s.t_arb = arbitrate(&s.reqs, None);
+        // What the engine would make without the TCU's intervention, every other limit still applied.
+        // The TCU sizes its own requests from it, so a shift follows the driver's torque instead of
+        // a figure frozen when the shift began
+        s.t_no_icpt = arbitrate(&s.reqs, Some(Source::Tcu))
     }
 }
 

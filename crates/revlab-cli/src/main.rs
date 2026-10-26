@@ -179,6 +179,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gb1_ctr: Port   = k.bus.alloc(0.0);
     let can_dtc: Port   = k.bus.alloc(0.0);     // TCU's stored lost-frame codes
     let dtc_comm: Port    = k.bus.alloc(0.0);
+    let t_no_icpt: Port = k.bus.alloc(0.0);     // ECU: torque without the TCU's intervention
+    let can_t_drv: Port = k.bus.alloc(0.0);     // ...as the TCU receives it
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -304,7 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             lever, n_eng: can_n_eng, n_in1: n_in1_s, n_in2: n_in2_s, n_wheel: can_n_wheel, pedal: can_pedal,
             t_eng: can_t_eng, brake, sel1, sel2, cmd1, cmd2, eng1, eng2, clutch_cmd, gear, clutch_state,
             t_disc_est1, t_disc_est2, overheat, tip_up, tip_dn, shift_phase, icpt_kind, icpt_t, t_clutch,
-            drive_state, grade_est, e1_ctr, b1_ctr, can_dtc
+            drive_state, grade_est, e1_ctr, b1_ctr, can_dtc, t_drv: can_t_drv
         }, sc.start_gear)
             .task(tcu::Rate::Ms10, Box::new(ClutchControl::dq200()))
             .task(tcu::Rate::Ms10, Box::new(ShiftControl::dq200()))
@@ -317,7 +319,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             in_pedal: pedal, t_arb, dtc, n_model, q_lim, m_air_est, t_loss, t_ind_req, cam_valid,
             crank_valid, t_ect_c: t_cool_s, freeze, t_bias, t_act, speed_source, tcu_icpt_kind: can_icpt_kind,
             tcu_icpt_t: can_icpt_t, vnt_cmd, p_set, p_em_est, tcu_gear: can_gear, tcu_clutch: can_clutch_state,
-            tcu_shift: can_shift_phase, tcu_t_clutch: can_t_clutch, f_road_est, gb1_ctr, dtc_comm
+            tcu_shift: can_shift_phase, tcu_t_clutch: can_t_clutch, f_road_est, gb1_ctr, dtc_comm,
+            t_no_icpt
         }, 6.0)
             .task(Rate::Ms10, Box::new(WarmupComp::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
@@ -412,6 +415,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("grade".into(), grade),
              ("can_dtc".into(), can_dtc),
              ("u0101".into(), dtc_comm),
+             ("t_no_icpt".into(), t_no_icpt),
         ],
         SimDuration::from_millis(10),
     )?));
@@ -430,6 +434,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Signal { src: n_meas, dst: can_n_eng, res: 0.25 },      // rpm
             Signal { src: pedal, dst: can_pedal, res: 0.004 },      // 0..1, 0.4% steps
             Signal { src: t_act, dst: can_t_eng, res: 0.5 },        // Nm, actual crank torque
+            Signal { src: t_no_icpt, dst: can_t_drv, res: 0.5 },    // Nm, without intervention
         ]).counter(e1_ctr).mute(mute_e1))
         // Brake_1: the ABS's broadcast. Wheel speed from the ABS ring, not the engine
         .frame(Frame::new(ms(10), us(2500), vec![
