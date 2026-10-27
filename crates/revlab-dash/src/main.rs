@@ -8,6 +8,7 @@ use eframe::egui;
 use eframe::egui::{pos2, vec2, Align2, FontId};
 
 mod gauges;
+mod angular;
 const PORT: u16 = 39810;
 
 const TACH: gauges::ArcSpec = gauges::ArcSpec {
@@ -20,6 +21,9 @@ const SPEEDO: gauges::ArcSpec = gauges::ArcSpec {
     label_div: 1.0, hot_from: None, red_from: None,
 };
 
+#[derive(PartialEq, Clone, Copy)]
+enum Style { Round, Angular }
+
 struct Dash {
     sock: UdpSocket,
     names: Vec<String>,
@@ -30,6 +34,8 @@ struct Dash {
     show_channels: bool,
     rpm_disp: f64,      // smoothed for the needles
     kmh_disp: f64,
+    style: Style,
+    page: usize,
 }
 
 impl Dash {
@@ -37,11 +43,81 @@ impl Dash {
         let sock = UdpSocket::bind(("127.0.0.1", PORT))?;
         sock.set_nonblocking(true)?;
         Ok(Dash { sock, names: Vec::new(), index: HashMap::new(), values: Vec::new(), t: 0.0, last_rx: None,
-            show_channels: false, rpm_disp: 0.0, kmh_disp: 0.0, })
+            show_channels: false, rpm_disp: 0.0, kmh_disp: 0.0, style: Style::Angular, page: 0 })
     }
 
     fn get(&self, name: &str) -> Option<f64> {
         self.index.get(name).and_then(|&i| self.values.get(i).copied()).filter(|v| v.is_finite())
+    }
+
+    fn fmt(&self, name: &str, f: impl Fn(f64) -> String) -> String {
+        self.get(name).map(f).unwrap_or_else(|| "--".into())
+    }
+
+    fn pair(&self, a: &str, b: &str, f: impl Fn(f64) -> String) -> String {
+        match (self.get(a), self.get(b)) {
+            (Some(x), Some(y)) => format!("{} / {}", f(x), f(y)),
+            _ => "--".into(),
+        }
+    }
+
+    fn cockpit(&self, lever: i32, sport: bool) -> angular::Cockpit {
+        let g = self.get("gear").unwrap_or(0.0).round() as i32;
+        let gear = match lever {
+            0 => "P".to_string(), 1 => "R".to_string(), 2 => "N".to_string(),
+            3 => format!("D{g}"), _ => format!("M{g}"),
+        };
+        let status = |x: f64| match x.round() as i32 { 0 => "ok", 1 => "pending", _ => "confirmed" }.to_string();
+        let bar_abs = |x: f64| format!("{:.2} bar", x / 1e5);
+        let deg_c = |x: f64| format!("{:.0} °C", x - 273.15);
+        let (page_title, rows) = match self.page {
+            0 => ("DRIVE", vec![
+                ("Boost", self.fmt("p_im", |x| format!("{:+.2} bar", (x - 101_325.0) / 1e5))),
+                ("Torque", self.fmt("t_act", |x| format!("{:.0} Nm", x))),
+                ("Coolant", self.fmt("t_ect", deg_c)),
+                ("Clutch", self.pair("t_disc_est1", "t_disc_est2", |x| format!("{:.0}", x - 273.15))),
+                ("Grade", self.fmt("grade_est", |x| format!("{:+.1} %", x))),
+            ]),
+            1 => ("AIR PATH", vec![
+                ("Boost set", self.fmt("p_set", bar_abs)),
+                ("Boost", self.fmt("p_im", bar_abs)),
+                ("Exhaust", self.fmt("p_em", bar_abs)),
+                ("Turbo", self.fmt("n_tc", |x| format!("{:.0}k rpm", x / 1e3))),
+                ("Vanes", self.fmt("vnt_pos", |x| format!("{:.0} %", x * 100.0))),
+            ]),
+            2 => ("GEARBOX", vec![
+                ("Drive", self.fmt("drive_state", |x| match x.round() as i32 {
+                    0 => "open", 1 => "slipping", _ => "locked" }.to_string())),
+                ("Clutch", self.fmt("t_clutch", |x| format!("{:.0} Nm", x))),
+                ("Slip", self.pair("slip1", "slip2", |x| format!("{:.0}", x))),
+                ("Discs", self.pair("t_disc_est1", "t_disc_est2", |x| format!("{:.0}", x - 273.15))),
+                ("Shift", self.fmt("shift_phase", |x| format!("phase {:.0}", x))),
+            ]),
+            _ => ("FAULTS", vec![
+                ("Engine", self.fmt("dtc", status)),
+                ("U0101", self.fmt("u0101", status)),
+                ("CAN (TCU)", self.fmt("can_dtc", |x| if x > 0.0 { format!("code {:.0}", x) } else { "ok".into() })),
+                ("Clutch", self.fmt("overheat", |x| if x > 0.5 { "overheat" } else { "ok" }.to_string())),
+            ]),
+        };
+        angular::Cockpit {
+            kmh: self.kmh_disp,
+            rpm: self.rpm_disp,
+            gear,
+            mode: if sport { "SPORT" } else { "COMFORT" },
+            fuel_frac: self.get("fuel_frac"),
+            coolant_c: self.get("t_ect").map(|t| t - 273.15),
+            range_km: self.get("range_km"),
+            clock: self.get("clock_s").map(|s| {
+                let m = (s / 60.0) as i64;
+                format!("{:02}:{:02}", (m / 60) % 24, m % 60)
+            }),
+            ambient_c: self.get("t_amb").map(|t| t - 273.15),
+            page_title,
+            rows,
+            eng_lamp: self.get("dtc").map_or(false, |d| d >= 2.0) || self.get("u0101").map_or(false, |d| d >= 2.0),
+            gbx_lamp: self.get("can_dtc").map_or(false, |d| d > 0.0) || self.get("overheat").map_or(false, |d| d > 0.5),
+        }
     }
 
     /// Drain everything that arrived since the last frame; only the newest values matter for a live view
@@ -102,12 +178,18 @@ impl eframe::App for Dash {
         let sport = lever == 4;
         let th = if sport { gauges::Theme::SPORT } else { gauges::Theme::COMFORT };
 
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::ArrowRight) { self.page = (self.page + 1) % 4; }
+            if i.key_pressed(egui::Key::ArrowLeft) { self.page = (self. page + 3) % 4; }
+        });
+        let cockpit = self.cockpit(lever, sport);
+
         egui::TopBottomPanel::top("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Revlab");
                 ui.separator();
                 if live {
-                    ui.colored_label(egui::Color32::LIGHT_GREEN, format!("live   t = {:2} s", self.t));
+                    ui.colored_label(egui::Color32::LIGHT_GREEN, format!("live   t = {:.2} s", self.t));
                 } else if self.names.is_empty() {
                     ui.label(format!("waiting for a sim streaming to port {PORT}"));
                 } else {
@@ -115,6 +197,8 @@ impl eframe::App for Dash {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.toggle_value(&mut self.show_channels, "channels");
+                    ui.selectable_value(&mut self.style, Style::Angular, "angular");
+                    ui.selectable_value(&mut self.style, Style::Round, "round");
                 });
             });
         });
@@ -136,57 +220,62 @@ impl eframe::App for Dash {
         egui::CentralPanel::default().frame(egui::Frame::default().fill(th.bg)).show(ctx, |ui| {
             let rect = ui.max_rect();
             let p = ui.painter_at(rect);
-            let r = (rect.width() / 6.4).min(rect.height() / 2.3);
-            let (cx, cy) = (rect.center().x, rect.center().y - r * 0.05);
-            let c_tach = pos2(cx - r * 2.05, cy);
-            let c_spd = pos2(cx + r * 2.05, cy);
+            match self.style {
+                Style::Angular => angular::paint(&p, rect, &cockpit, &th),
+                Style::Round => {
+                    let r = (rect.width() / 6.4).min(rect.height() / 2.3);
+                    let (cx, cy) = (rect.center().x, rect.center().y - r * 0.05);
+                    let c_tach = pos2(cx - r * 2.05, cy);
+                    let c_spd = pos2(cx + r * 2.05, cy);
 
-            gauges::arc_gauge(&p, c_tach, r, &TACH, self.rpm_disp, &th);
-            gauges::arc_gauge(&p, c_spd, r, &SPEEDO, self.kmh_disp, &th);
+                    gauges::arc_gauge(&p, c_tach, r, &TACH, self.rpm_disp, &th);
+                    gauges::arc_gauge(&p, c_spd, r, &SPEEDO, self.kmh_disp, &th);
 
-            // Gauge hearts: digital speed, and rpm under its scale
-            p.text(c_spd, Align2::CENTER_CENTER, format!("{:.0}", self.kmh_disp.max(0.0)),
-                FontId::monospace(r * 0.36), th.text);
-            p.text(c_spd + vec2(0.0, r * 0.30), Align2::CENTER_CENTER, "km/h", FontId::proportional(r * 0.1), th.muted);
-            p.text(c_tach, Align2::CENTER_CENTER, format!("{:.0}", self.rpm_disp.max(0.0)),
-                FontId::monospace(r * 0.22), th.text);
-            p.text(c_tach + vec2(0.0, r * 0.30), Align2::CENTER_CENTER, "rpm x1000", FontId::proportional(r * 0.1), th.muted);
+                    // Gauge hearts: digital speed, and rpm under its scale
+                    p.text(c_spd, Align2::CENTER_CENTER, format!("{:.0}", self.kmh_disp.max(0.0)),
+                        FontId::monospace(r * 0.36), th.text);
+                    p.text(c_spd + vec2(0.0, r * 0.30), Align2::CENTER_CENTER, "km/h", FontId::proportional(r * 0.1), th.muted);
+                    p.text(c_tach, Align2::CENTER_CENTER, format!("{:.0}", self.rpm_disp.max(0.0)),
+                        FontId::monospace(r * 0.22), th.text);
+                    p.text(c_tach + vec2(0.0, r * 0.30), Align2::CENTER_CENTER, "rpm x1000", FontId::proportional(r * 0.1), th.muted);
 
-            // Center: gear and mode
-            let g = self.get("gear").unwrap_or(0.0).round() as i32;
-            let gear_txt = match lever {
-                0 => "P".to_string(), 1 => "R".to_string(), 2 => "N".to_string(), 3 => format!("D{g}"),
-                _ => format!("M{g}"),
-            };
-            let cg = pos2(cx, cy - r * 0.45);
-            p.text(cg, Align2::CENTER_CENTER, gear_txt, FontId::monospace(r * 0.5), th.accent);
-            p.text(cg + vec2(0.0, r * 0.36), Align2::CENTER_CENTER, if sport { "SPORT" } else { "COMFORT" },
-                FontId::proportional(r * 0.1), th.muted);
+                    // Center: gear and mode
+                    let g = self.get("gear").unwrap_or(0.0).round() as i32;
+                    let gear_txt = match lever {
+                        0 => "P".to_string(), 1 => "R".to_string(), 2 => "N".to_string(), 3 => format!("D{g}"),
+                        _ => format!("M{g}"),
+                    };
+                    let cg = pos2(cx, cy - r * 0.45);
+                    p.text(cg, Align2::CENTER_CENTER, gear_txt, FontId::monospace(r * 0.5), th.accent);
+                    p.text(cg + vec2(0.0, r * 0.36), Align2::CENTER_CENTER, if sport { "SPORT" } else { "COMFORT" },
+                        FontId::proportional(r * 0.1), th.muted);
 
-            // Info stack
-            let clutch = match (self.get("t_disc_est1"), self.get("t_disc_est2")) {
-                (Some(a), Some(b)) => Some(format!("{:.0} / {:.0} °C", a - 273.15, b - 273.15)),
-                _ => None,
-            };
-            let rows = [
-                ("Boost", self.get("p_im").map(|x| format!("{:+.2} bar", (x - 101_325.0) / 1e5))),
-                ("Torque", self.get("t_act").map(|x| format!("{:.0} Nm", x))),
-                ("Coolant", self.get("t_ect").map(|x| format!("{:.0} °C", x - 273.15))),
-                ("Clutch", clutch),
-            ];
-            for (i, (label, val)) in rows.iter().enumerate() {
-                let y = cy + r * 0.15 + i as f32 * r * 0.17;
-                p.text(pos2(cx - r * 0.05, y), Align2::RIGHT_CENTER, *label, FontId::proportional(r * 0.1), th.muted);
-                p.text(pos2(cx + r * 0.05, y), Align2::LEFT_CENTER, val.clone().unwrap_or_else(|| "--".into()),
-                    FontId::monospace(r * 0.1), th.text);
+                    // Info stack
+                    let clutch = match (self.get("t_disc_est1"), self.get("t_disc_est2")) {
+                        (Some(a), Some(b)) => Some(format!("{:.0} / {:.0} °C", a - 273.15, b - 273.15)),
+                        _ => None,
+                    };
+                    let rows = [
+                        ("Boost", self.get("p_im").map(|x| format!("{:+.2} bar", (x - 101_325.0) / 1e5))),
+                        ("Torque", self.get("t_act").map(|x| format!("{:.0} Nm", x))),
+                        ("Coolant", self.get("t_ect").map(|x| format!("{:.0} °C", x - 273.15))),
+                        ("Clutch", clutch),
+                    ];
+                    for (i, (label, val)) in rows.iter().enumerate() {
+                        let y = cy + r * 0.15 + i as f32 * r * 0.17;
+                        p.text(pos2(cx - r * 0.05, y), Align2::RIGHT_CENTER, *label, FontId::proportional(r * 0.1), th.muted);
+                        p.text(pos2(cx + r * 0.05, y), Align2::LEFT_CENTER, val.clone().unwrap_or_else(|| "--".into()),
+                            FontId::monospace(r * 0.1), th.text);
+                    }
+
+                    // Lamps: engine for P0016 or U0101, gearbox for lost frames or an overheated clutch
+                    let engine = self.get("dtc").map_or(false, |d| d >= 2.0) || self.get("u0101").map_or(false, |d| d >= 2.0);
+                    let gearbox = self.get("can_dtc").map_or(false, |d| d > 0.0) || self.get("overheat").map_or(false, |d| d > 0.5);
+                    let ly = cy + r * 0.95;
+                    gauges::lamp(&p, pos2(cx - r * 0.3, ly), r * 0.12, "ENG", engine, &th);
+                    gauges::lamp(&p, pos2(cx + r * 0.3, ly), r * 0.12, "GBX", gearbox, &th);
+                }
             }
-
-            // Lamps: enigne for P0016 or U0101, gearbox for lost frames or an overheated clutch
-            let engine = self.get("dtc").map_or(false, |d| d >= 2.0) || self.get("u0101").map_or(false, |d| d >= 2.0);
-            let gearbox = self.get("can_dtc").map_or(false, |d| d > 0.0) || self.get("overheat").map_or(false, |d| d > 0.5);
-            let ly = cy + r * 0.95;
-            gauges::lamp(&p, pos2(cx - r * 0.3, ly), r * 0.12, "ENG", engine, &th);
-            gauges::lamp(&p, pos2(cx + r * 0.3, ly), r * 0.12, "GBX", gearbox, &th);
         });
 
         ctx.request_repaint_after(Duration::from_millis(16));
