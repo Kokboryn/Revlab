@@ -285,10 +285,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else { None };
 
     if args.live {
-        k.add(Box::new(Pacer::new(1.0)));
         k.add(Box::new(keyboard::Keyboard::new(pedal, t_load, quit.clone())));
     } else {
-        if let Some(sp) = args.speed { k.add(Box::new(Pacer::new(sp))); }
         k.add(Box::new(LoadProfile::new(load_steps, t_load)));
         k.add(Box::new(LoadProfile::new(pedal_steps, pedal)));
     }
@@ -485,6 +483,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(port) = args.stream {
         k.add(Box::new(UdpStreamer::new(port, channels.clone(), SimDuration::from_millis(20))));
+    }
+
+    // Wall-clock pacing goes last. Each component's noise is seeded from its registration index, so a
+    // pacer slotted in mid-list would shift every index after it and change the run. It touches no
+    // signal
+    if args.live {
+        k.add(Box::new(Pacer::new(1.0)));
+    } else if let Some(sp) = args.speed {
+        k.add(Box::new(Pacer::new(sp)));
     }
 
 
