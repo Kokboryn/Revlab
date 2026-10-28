@@ -29,6 +29,8 @@ pub struct Scenario {
     pub start_kmh: f64,
     pub start_gear: usize,  // gear engaged at t=0, for rolling starts
     pub events: Vec<Event>,
+    pub fuel_fill: f64,
+    pub clock_start: f64,
 }
 
 pub const NAMES: &[(&str, &str)] = &[
@@ -152,7 +154,7 @@ impl Scenario {
             _ => return None,
         };
         let about = NAMES.iter().find(|(k,_)| *k==n).map(|(_, v)| *v)?;
-        Some(Scenario { name: NAMES.iter().find(|(k,_)| *k==n).unwrap().0, about, duration_s, start_kmh, start_gear, events })
+        Some(Scenario { name: NAMES.iter().find(|(k,_)| *k==n).unwrap().0, about, duration_s, start_kmh, start_gear, events, fuel_fill: 0.6, clock_start: 8.0 * 3600.0 })
     }
 }
 

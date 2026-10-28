@@ -93,12 +93,19 @@ impl Dash {
                 ("Discs", self.pair("t_disc_est1", "t_disc_est2", |x| format!("{:.0}", x - 273.15))),
                 ("Shift", self.fmt("shift_phase", |x| format!("phase {:.0}", x))),
             ]),
-            _ => ("FAULTS", vec![
+            3 => ("FAULTS", vec![
                 ("Engine", self.fmt("dtc", status)),
                 ("U0101", self.fmt("u0101", status)),
                 ("CAN (TCU)", self.fmt("can_dtc", |x| if x > 0.0 { format!("code {:.0}", x) } else { "ok".into() })),
                 ("Clutch", self.fmt("overheat", |x| if x > 0.5 { "overheat" } else { "ok" }.to_string())),
             ]),
+            _ => ("TRIP", vec![
+                ("Distance", self.fmt("trip_km", |x| format!("{:.1} km", x))),
+                ("Average", self.fmt("cons_avg", |x| format!("{:.1} l/100", x))),
+                ("Now", self.fmt("fuel_lph", |x| format!("{:.1} l/h", x))),
+                ("Range", self.fmt("range_km", |x| format!("{:.0} km", x))),
+                ("Tank", self.fmt("fuel_l", |x| format!("{:.1} l", x))),
+            ])
         };
         angular::Cockpit {
             kmh: self.kmh_disp,
@@ -112,7 +119,7 @@ impl Dash {
                 let m = (s / 60.0) as i64;
                 format!("{:02}:{:02}", (m / 60) % 24, m % 60)
             }),
-            ambient_c: self.get("t_amb").map(|t| t - 273.15),
+            ambient_c: self.get("t_amb_disp").map(|t| t - 273.15),
             page_title,
             rows,
             eng_lamp: self.get("dtc").map_or(false, |d| d >= 2.0) || self.get("u0101").map_or(false, |d| d >= 2.0),
@@ -172,15 +179,17 @@ impl eframe::App for Dash {
         // Needles chase the signal instead of jumping to it
         let k = (ctx.input(|i| i.stable_dt) as f64 * 12.0).min(1.0);
         if let Some(n) = self.get("n_crank") { self.rpm_disp += (n - self.rpm_disp) * k; }
-        if let Some(v) = self.get("v_veh") { self.kmh_disp += (v * 3.6 - self.kmh_disp) * k; }
+        // The cluster's indicated speed when the sim sends it, true speed otherwise
+        let kmh = self.get("v_disp").or_else(|| self.get("v_veh").map(|v| v * 3.6));
+        if let Some(v) = kmh { self.kmh_disp += (v - self.kmh_disp) * k; }
 
         let lever = self.get("lever").unwrap_or(2.0).round() as i32;
         let sport = lever == 4;
         let th = if sport { gauges::Theme::SPORT } else { gauges::Theme::COMFORT };
 
         ctx.input(|i| {
-            if i.key_pressed(egui::Key::ArrowRight) { self.page = (self.page + 1) % 4; }
-            if i.key_pressed(egui::Key::ArrowLeft) { self.page = (self. page + 3) % 4; }
+            if i.key_pressed(egui::Key::ArrowRight) { self.page = (self.page + 1) % 5; }
+            if i.key_pressed(egui::Key::ArrowLeft) { self.page = (self. page + 4) % 5; }
         });
         let cockpit = self.cockpit(lever, sport);
 

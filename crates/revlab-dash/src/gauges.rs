@@ -2,7 +2,6 @@
 //! touching the data side
 
 use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Shape, Stroke, Vec2};
-use eframe::egui::ImageData::Color;
 
 #[derive(Clone, Copy)]
 pub struct Theme {

@@ -38,6 +38,8 @@ use revlab_kernel::can::{CanBus, Frame, Signal};
 use revlab_kernel::ecu::boost::BoostControl;
 use revlab_kernel::plant::vnt_actuator::{VntActuator, VntActuatorPorts};
 use revlab_kernel::plant::dyno::{Dyno, DynoPorts};
+use revlab_kernel::plant::fuel_tank::{FuelTank, FuelTankPorts};
+use revlab_kernel::cluster::{Cluster, ClusterPorts};
 
 struct RawGuard;
 impl Drop for RawGuard {
@@ -181,6 +183,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dtc_comm: Port    = k.bus.alloc(0.0);
     let t_no_icpt: Port = k.bus.alloc(0.0);     // ECU: torque without the TCU's intervention
     let can_t_drv: Port = k.bus.alloc(0.0);     // ...as the TCU receives it
+    let fuel_l: Port = k.bus.alloc(66.0 * sc.fuel_fill);
+    let fuel_lph: Port = k.bus.alloc(0.0);
+    let fuel_frac: Port    = k.bus.alloc(sc.fuel_fill);
+    let range_km: Port = k.bus.alloc(0.0);
+    let clock_s: Port = k.bus.alloc(sc.clock_start);
+    let t_amb_disp: Port = k.bus.alloc(293.15);
+    let v_disp: Port = k.bus.alloc(0.0);
+    let trip_km: Port = k.bus.alloc(0.0);
+    let cons_avg: Port = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -415,6 +426,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("can_dtc".into(), can_dtc),
              ("u0101".into(), dtc_comm),
              ("t_no_icpt".into(), t_no_icpt),
+             ("fuel_l".into(), fuel_l),
+             ("fuel_lph".into(), fuel_lph),
+             ("fuel_frac".into(), fuel_frac),
+             ("range_km".into(), range_km),
+             ("clock_s".into(), clock_s),
+             ("t_amb_disp".into(), t_amb_disp),
+             ("v_disp".into(), v_disp),
+             ("trip_km".into(), trip_km),
+             ("cons_avg".into(), cons_avg),
+             ("t_amb".into(), t_amb),
         ];
     k.add(Box::new(CsvLogger::new(&out, channels.clone(), SimDuration::from_millis(10))?));
 
@@ -453,6 +474,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !dyno_steps.is_empty() {
         k.add(Box::new(Dyno::new(dyno_steps, DynoPorts { omega, t_dyno })));
     }
+
+    // Fuel and the instrument cluster only read what's already on the bus, so nothing above changes.
+    // The cluster gets wheel speed the way the real one does: from the ABS over Brake_1
+    k.add(Box::new(FuelTank::passat_b8(FuelTankPorts {q_cmd, omega, fuel_l, fuel_lph }, sc.fuel_fill)));
+    k.add(Box::new(Cluster::passat_b8(ClusterPorts {
+        fuel_l, fuel_lph, n_wheel: can_n_wheel, t_amb, fuel_frac, range_km, clock_s, t_amb_disp, v_disp,
+        trip_km, cons_avg,
+    }, sc.clock_start)));
 
     if let Some(port) = args.stream {
         k.add(Box::new(UdpStreamer::new(port, channels.clone(), SimDuration::from_millis(20))));
