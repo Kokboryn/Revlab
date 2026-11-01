@@ -9,17 +9,17 @@ PLOT_FLAG=${PLOT:-1}; [[ "$PLOT_FLAG" == 1 ]] && PLOT_FLAG=--plot || PLOT_FLAG=
 
 mkdir -p "$OUT"
 cargo build --release
-mapfile -t SCENARIOS < <(cargo run --release --quiet -- --list | awk '{print $1}')
+mapfile -t SCENARIOS < <(cargo run --bin revlab-cli --release --quiet -- --list | awk '{print $1}')
 
 for s in "${SCENARIOS[@]}"; do
     echo "=== $s"
     dir="$OUT/${s}_s$SEED"
     mkdir -p "$dir"
-    if ! cargo run --release --quiet -- --scenario "$s" --seed "$SEED" --out "$dir/run.csv" $PLOT_FLAG 2>"$dir/stderr.log"; then
+    if ! cargo run --bin revlab-cli  --release --quiet -- --scenario "$s" --seed "$SEED" --out "$dir/run.csv" $PLOT_FLAG 2>"$dir/stderr.log"; then
       echo " RUN FAILED (see $dir/stderr.log)"
       continue
     fi
-    cargo run --release --quiet -- --scenario "$s" --seed "$SEED" --out "$dir/.replay.csv" 2>/dev/null
+    cargo run --bin revlab-cli --release --quiet -- --scenario "$s" --seed "$SEED" --out "$dir/.replay.csv" 2>/dev/null
     if cmp -s "$dir/run.csv" "$dir/.replay.csv"; then
         echo " replay OK"
     else

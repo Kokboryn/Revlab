@@ -63,6 +63,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut k = Kernel::new(args.seed);
 
+    // A rolling start is an initial condition for the sensors too; the ABS ring is already turning, so
+    // its reading and the frame the TCU receives start at road speed, not at zero
+    let r_wheel = RoadLoadPar::passat_b8_16tdi().r_wheel;
+    let n_wheel0 = sc.start_kmh / 3.6 / r_wheel * 60.0 / (2.0 * PI);
     // Ports. q_cmd is preloaded so the engine has fuel at t=0 before the governor's first execution at 1 ms
     let q_cmd: Port         = k.bus.alloc(6.0);
     let omega: Port         = k.bus.alloc(IDLE_RPM * 2.0 * PI / 60.0);
@@ -115,11 +119,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // What the TCU receives over CAN: the sender's value as of the last frame, quantized
     let can_n_eng: Port     = k.bus.alloc(IDLE_RPM);
     let can_pedal: Port     = k.bus.alloc(0.0);
-    let can_n_wheel: Port   = k.bus.alloc(0.0);
+    let can_n_wheel: Port   = k.bus.alloc(n_wheel0);
     let shift_phase: Port   = k.bus.alloc(0.0);     // 0 idle, 1 prepare, 2 release, 3 torque, 4 inertia
     let f_road: Port        = k.bus.alloc(0.0);
-    let v_veh: Port         = k.bus.alloc(0.0);
-    let n_wheel: Port       = k.bus.alloc(0.0);
+    let v_veh: Port         = k.bus.alloc(sc.start_kmh / 3.6);
+    let n_wheel: Port       = k.bus.alloc(n_wheel0);
     let grade: Port         = k.bus.alloc(0.0);
     let brake: Port         = k.bus.alloc(0.0);
     let headwind: Port      = k.bus.alloc(0.0);
@@ -133,7 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_disc_est1: Port    = k.bus.alloc(293.15);  // The TCU's own estimate, not the plant's
     let t_disc_est2: Port    = k.bus.alloc(293.15);
     let overheat: Port      = k.bus.alloc(0.0);
-    let n_wheel_s: Port     = k.bus.alloc(0.0);     // ABS ring, road speed
+    let n_wheel_s: Port     = k.bus.alloc(n_wheel0);     // ABS ring, road speed
     // Two packs, two shafts. Suffix 1 = K1, odd gears; 2 = K2, even gears
     let cmd1: Port          = k.bus.alloc(0.0);
     let cmd2: Port          = k.bus.alloc(0.0);
@@ -192,6 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let v_disp: Port = k.bus.alloc(0.0);
     let trip_km: Port = k.bus.alloc(0.0);
     let cons_avg: Port = k.bus.alloc(0.0);
+    let f_fric: Port = k.bus.alloc(0.0);
 
     let geom = Geometry::ea288_16tdi();
     eprintln!("displacement {:.0} cc    inertia {:.4} kg·m²", geom.displacement() * 1e6, geom.inertia_est());
@@ -301,13 +306,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // sensor exists on a DQ200, which is why the thermal protection runs on a model instead
     k.add(Box::new(AnalogSensor::new(n_in1, n_in1_s, 0.010, 2.0, 8000.0, 0.0)));
     k.add(Box::new(AnalogSensor::new(n_in2, n_in2_s, 0.010, 2.0, 8000.0, 0.0)));
-    k.add(Box::new(AnalogSensor::new(n_wheel, n_wheel_s, 0.020, 1.0, 2000.0, 0.0)));
+    k.add(Box::new(AnalogSensor::new(n_wheel, n_wheel_s, 0.020, 1.0, 2000.0, n_wheel0)));
 
     k.add(Box::new(RoadLoad::new(RoadLoadPar::passat_b8_16tdi(), RoadLoadPorts {
-        v_veh, grade, headwind, brake, p_amb, t_amb, f_road,
+        v_veh, grade, headwind, brake, p_amb, t_amb, f_road, f_fric
     })));
     k.add(Box::new(Gearbox::dq200_passat(RoadLoadPar::passat_b8_16tdi(), GearboxPorts {
-        t_c1, t_c2, sel1, sel2, f_road, omega_in1, omega_in2, n_in1, n_in2, eng1, eng2, v_veh, n_wheel
+        t_c1, t_c2, sel1, sel2, f_road, omega_in1, omega_in2, n_in1, n_in2, eng1, eng2, v_veh, n_wheel,
+        f_fric
     }, sc.start_kmh, sc.start_gear)));
 
     k.add(Box::new(
@@ -434,6 +440,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              ("trip_km".into(), trip_km),
              ("cons_avg".into(), cons_avg),
              ("t_amb".into(), t_amb),
+             ("f_fric".into(), f_fric),
         ];
     k.add(Box::new(CsvLogger::new(&out, channels.clone(), SimDuration::from_millis(10))?));
 

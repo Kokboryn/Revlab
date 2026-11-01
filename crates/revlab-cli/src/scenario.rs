@@ -55,7 +55,8 @@ pub const NAMES: &[(&str, &str)] = &[
     ("full_load", "engine on the dyno in N, full pedal, held at 1250-4500 rpm in 250 rpm steps of 8 s - the torque curve"),
     ("can_engine1", "D, 50% pedal; Engine_1 silent 15-25 s, TCU holds its gear on shaft speed, then recovers"),
     ("can_brake1", "D, 40% pedal; Brake_1 lost at 10 s, TCU takes road speed from the engaged shaft"),
-    ("can_gearbox1", "D, full pedal; Gearbox_1 lost at 5 s, ECU drops interventions, observer steps out")
+    ("can_gearbox1", "D, full pedal; Gearbox_1 lost at 5 s, ECU drops interventions, observer steps out"),
+    ("stop_go", "D: pull away, lift and brake to a stop, wait on the brake, pull away again, then a harder stop"),
 ];
 
 impl Scenario {
@@ -150,6 +151,16 @@ impl Scenario {
                 Event::Lever { at_s: 2.0, lever: Lever::Drive },
                 Event::Pedal { at_s: 2.5, position: 1.0 },
                 Event::CanMute { at_s: 5.0, frame: CanFrame::Gearbox1, until_s: None },
+            ]),
+            "stop_go"   => (60, 0.0, 1, vec![
+                Event::Lever { at_s: 2.0, lever: Lever::Drive },
+                Event::Pedal { at_s: 2.5, position: 0.4 },
+                Event::Pedal { at_s: 14.0, position: 0.0 },     // lift: coast-down shifts
+                Event::Brake { at_s: 16.0, cmd: 0.25 },         // gentle stop, held on the brake
+                Event::Brake { at_s: 32.0, cmd: 0.0 },          // driver's foot moves over...
+                Event::Pedal { at_s: 32.5, position: 0.4 },     // ...and pulls away again
+                Event::Pedal { at_s: 44.0, position: 0.0 },
+                Event::Brake { at_s: 45.0, cmd: 0.6 },          // harder stop: faster than sequential downshift
             ]),
             _ => return None,
         };

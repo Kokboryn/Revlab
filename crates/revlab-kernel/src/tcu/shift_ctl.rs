@@ -39,6 +39,9 @@ enum Phase {
     /// Torque second: engine is at the new shaft's speed, so the on coming clutch grips with almost no
     /// slip while the off going one empties
     Catch { to: usize, x: f64, c_off0: f64 },
+    /// Coming to a stop: nothing is driving, so no handover. Open both packs, then move the forks to
+    /// 1st with 2nd preselected, the way a DQ200 sits at a standstill
+    Stop,
 }
 
 pub struct ShiftControl {
@@ -70,6 +73,11 @@ pub struct ShiftControl {
     pub grade_dead: f64,            // %, climb below this is treated as estimate error
     pub a_hold: f64,                // m/s², on a climb the next gear must still manage this
     pub n_hill_max: f64,            // rpm, above this an upshift goes regardless: no camping on the limiter
+    pub v_stop_1st: f64,            // km/h, rolling to a stop below this, 1st goes in with the packs open
+    pub k_dn_brake: f64,            // rpm the downshift line rises per m/s² of deceleration, braking
+    pub min_hold_brake: f64,        // s, braking the box may step down again this soon
+    pub n_open_brake: f64,          // rpm, braking in 2nd below this shaft speed, the stop shift goes early
+
     phase: Phase,
     i_n: f64,
     seen_up: u32,
@@ -118,6 +126,10 @@ impl ShiftControl {
             grade_dead: 2.0,
             a_hold: 0.0,
             n_hill_max: 4300.0,
+            v_stop_1st: 10.0,
+            k_dn_brake: 150.0,
+            min_hold_brake: 0.3,
+            n_open_brake: 1000.0,
             phase: Phase::Idle,
             i_n: 0.0,
             seen_up: 0,
@@ -146,7 +158,7 @@ impl Task for ShiftControl {
         let tipped_dn = s.tip_dn != self.seen_dn;
         self.seen_dn = s.tip_dn;
 
-        if !s.lever.drives() { self.phase = Phase::Idle; }
+        if !s.lever.drives() && self.phase != Phase::Stop { self.phase = Phase::Idle; }
         let g = s.gear;
         if g == 0 {
             s.sel = [0, 0];
@@ -194,7 +206,11 @@ impl Task for ShiftControl {
         // Shift map: lines in shaft rpm of the current gear against pedal
         let p = s.pedal.clamp(0.0, 1.0);
         let n_up = interp(&self.map_up, p);
-        let n_dn = interp(&self.map_dn, p);
+        // Braking, the downshift line rises with the deceleration: the box steps down early enough
+        // that the engine stays above idle and helps brake, with the right gear in if the driver goes
+        // back on the pedal. 2 -> 1 is left to the stop shift, and nothing goes up while braking
+        let braking = s.brake >= 0.05;
+        let n_dn = interp(&self.map_dn, p) + if braking && g > 2 { self.k_dn_brake * (-self.a_f).max(0.0) } else { 0.0 };
 
         // Preselect where the next shift will go. In D, if the map already wants a shift, that decides --
         // a kickdown chain or a tip-out chain knows its next step. Otherwise, gaining speed means up and
@@ -234,14 +250,15 @@ impl Task for ShiftControl {
                 // box would hunt between the two
                 let ask = if s.lever == Lever::Drive && closed {
                     let kick = p >= self.kd_pedal && dn_land <= self.kd_land;
-                    if g < 7 && s.n_in > n_up && up_land >= n_dn + self.land_margin
+                    if g < 7 && s.n_in > n_up && up_land >= n_dn + self.land_margin && !braking
                         && (!hill_hold || s.n_in > self.n_hill_max) { g + 1 }
-                    else if g > 1 && (s.n_in < n_dn || kick) && dn_land <= self.n_dn_max { g - 1 }
+                    else if g > 1 && (s.n_in < n_dn || kick) && dn_land <= self.n_dn_max && !(braking && g == 2) { g - 1 }
                     else { 0 }
                 } else { 0 };
                 // A request has to persist, so a pedal blip or a bump in the road doesn't shift the box
                 if ask != self.want { self.want = ask; self.want_t = 0.0; } else { self.want_t += DT; }
-                let auto_go = self.want != 0 && self.want_t >= self.t_confirm && self.since_shift >= self.min_hold;
+                let hold = if braking { self.min_hold_brake } else { self.min_hold };
+                let auto_go = self.want != 0 && self.want_t >= self.t_confirm && self.since_shift >= hold;
 
                 let manual = s.lever == Lever::Manual && closed;
                 // Without Engine_1 the TCU can't see the engine through a handover: no new shifts
@@ -251,14 +268,27 @@ impl Task for ShiftControl {
                     else if auto_go { self.want }
                     else { 0 };
 
+                // Rolling to a stop with the pedal up, or in N: 1st goes in, whatever gear the car is
+                // in. Below this speed no higher gear can keep the engine above idle anyway
+                let stopping = g != 1 && (p < 0.05 || !s.lever.drives())
+                    && (s.v_veh < self.v_stop_1st || (braking && g == 2 && s.n_in < self.n_open_brake));
 
-                if to != 0 {
+                if stopping {
+                    self.since_shift = 0.0;
+                    self.want = 0;
+                    self.want_t = 0.0;
+                    Phase::Stop
+                } else if to != 0 {
                     self.since_shift = 0.0;
                     self.want = 0;
                     self.want_t = 0.0;
                     Phase::Prepare { to }
                 } else { Phase::Idle }
             }
+
+            // Braking cancels an upshift that hasn't touched a clutch yet. It never happened, so it
+            // doesn't hold off the downshifts either
+            Phase::Prepare { to } if to > g && braking => { self.since_shift = self.min_hold; Phase::Idle }
 
             Phase::Prepare { to } => {
                 s.sel[shaft_of(to)] = to;
@@ -403,6 +433,19 @@ impl Task for ShiftControl {
                         Phase::Idle
                     } else { Phase::Catch {to, x, c_off0 } }
                 }
+
+            Phase::Stop => {
+                tgt = [0.0; 2];
+                // The driving pack has to be empty before its fork may move
+                if self.cmd[k] <= 0.0 {
+                    s.sel = [1, 2];
+                    if s.eng[0] == 1 {
+                        s.gear = 1;
+                        s.clutch_state = ClutchState::Open;
+                        Phase::Idle
+                    } else { Phase::Stop }
+                } else { Phase::Stop }
+            }
         };
 
         for j in 0..2 {
@@ -418,6 +461,7 @@ impl Task for ShiftControl {
             Phase::Idle => 0, Phase::Prepare { .. } => 1, Phase::Release { .. } => 2,
             Phase::Torque { .. } => 3, Phase::Inertia { .. } => 4,
             Phase::Flare { .. } => 4, Phase::Catch { .. } => 3,
+            Phase::Stop => 1,
         };
     }
 }

@@ -4,6 +4,8 @@
 /// can pull away on a hill without the driver balancing anything.
 
 use super::{ClutchState, Task, TcuState};
+use super::shift_ctl::shaft_of;
+
 pub struct ClutchControl {
     pub rate_open: f64,     // 1/s, releasing is a valve opening -- fast
     pub rate_max: f64,      // 1/s, actuator slew -- the servo has bandwidth
@@ -43,13 +45,21 @@ impl Task for ClutchControl {
     fn name(&self) -> &'static str { "ClutchControl" }
 
     fn run(&mut self, s: &mut TcuState) {
+        // After an open shift the pack really is empty, whatever this loop last asked for. Start from
+        // there instead of slamming the new gear's clutch shut at the old command
+        if s.clutch_state == ClutchState::Open && s.gear >= 1 {
+            self.cmd = self.cmd.min(s.cmd[shaft_of(s.gear)]);
+        }
         let slip = s.n_eng - s.n_in;
+        // Rolling into a stop in 1st on the brake, the pack stays open: closing it would only drag
+        // the engine under idle for the guard to tear it open again. Above walking pace 1st still brakes
+        let braking_in_1st = s.gear == 1 && s.brake >= 0.05 && s.pedal < 0.02 && s.n_in < 2000.0;
 
         let mut err = 0.0;          // stays zero unless the speed loop is in charge
         let mut target = match (s.lever, s.gear) {
             (lever, g) if lever.drives() && g >= 1 => {
-                if s.n_in < 50.0 && (s.pedal < 0.02 || s.e1_lost) {
-                    0.0                             // stopped, pedal up, or blind to engine speed, where a launch can't be guarded
+                if (s.n_in < 50.0 && (s.pedal < 0.02 || s.e1_lost)) || braking_in_1st {
+                    0.0                             // stopped with pedal up, blind to engine speed, or braking into a stop in 1st
                 } else if g >= 2 || (s.n_in > s.n_eng - self.lock_slip && s.n_in > 300.0) {
                     // Launch control is a 1st gear strategy. In any higher gear the car is already
                     // moving, so engagement just closes the clutch
@@ -73,7 +83,7 @@ impl Task for ClutchControl {
             target = target.max(self.creep_cmd)
         }
 
-        if s.clutch_state == ClutchState::Closed && s.lever.drives() && s.gear >= 1 {
+        if s.clutch_state == ClutchState::Closed && s.lever.drives() && s.gear >= 1 && !braking_in_1st {
             target = 1.0;
         }
 

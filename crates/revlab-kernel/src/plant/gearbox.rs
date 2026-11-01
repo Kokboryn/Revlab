@@ -20,6 +20,7 @@ pub struct GearboxPorts {
     pub sel1: Port,     // fork request, shaft 1: 1, 3, 5, 7. 0 = no command, fork holds its detent
     pub sel2: Port,     // dork request, shaft 2: 2, 4, 6
     pub f_road: Port,
+    pub f_fric: Port,   // N, rolling resistance + brakes, applied as friction
     // outputs
     pub omega_in1: Port,
     pub omega_in2: Port,
@@ -127,6 +128,7 @@ impl Component for Gearbox {
                             ctx.bus.get(self.ports.sel2).round().max(0.0) as usize];
         let tc = [ctx.bus.get(self.ports.t_c1), ctx.bus.get(self.ports.t_c2)];
         let f_road = ctx.bus.get(self.ports.f_road);
+        let f_fric = ctx.bus.get(self.ports.f_fric).max(0.0);
         for k in 0..2 { self.fork_step(k, sel[k], tc[k]); }
 
         let r = self.p.r_wheel;
@@ -159,8 +161,18 @@ impl Component for Gearbox {
             }
         }
 
-        // No floor: a clutch that cannot hold the grade lets the car roll back
-        self.w_wheel += t_wheel / j * self.dt;
+        // Friction (Karnopp): moving, it opposes the motion; stopped, it holds the car at exactly zero
+        // while what pushes fits within its capacity, and only the excess moves it
+        let t_fric = f_fric * r;
+        if self.w_wheel == 0.0 {
+            if t_wheel.abs() > t_fric {
+                self.w_wheel += (t_wheel - t_fric * t_wheel.signum()) / j * self.dt;
+            }
+        } else {
+            let w_new = self.w_wheel + (t_wheel - t_fric * self.w_wheel.signum()) / j * self.dt;
+            // Friction can stop the car but never reverse it: crossing zero means it stopped this step
+            self.w_wheel = if w_new * self.w_wheel <= 0.0 { 0.0 } else { w_new };
+        }
 
         let mut w_in = [0.0; 2];
         for k in 0..2 {

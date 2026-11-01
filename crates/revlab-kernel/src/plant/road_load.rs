@@ -14,7 +14,8 @@ pub struct RoadLoadPorts {
     pub p_amb: Port,
     pub t_amb: Port,
     // outputs
-    pub f_road: Port,       // N, total resistance opposing motion
+    pub f_road: Port,       // N, aero and grade: forces that push whichever way they point
+    pub f_fric: Port,       // N, rolling resistance and brakes: friction capacity, >= 0
 }
 
 
@@ -71,11 +72,13 @@ impl Component for RoadLoad {
         let v_air = v + headwind;
         let f_aero = 0.5 * rho * self.p.cd * self.p.frontal_area * v_air * v_air.abs();
         // signum(0.0) is 1.0 in Rust, which would push a stationary car backwards
-        let dir = if v.abs() < 1e-3 { 0.0 } else { v.signum() };
-        let f_roll = self.p.c_rr * self.p.mass * G * grade.cos() * dir;
+        let f_roll = self.p.c_rr * self.p.mass * G * grade.cos();
         let f_grade = self.p.mass * G * grade.sin();
         let f_brake = ctx.bus.get(self.ports.brake).clamp(0.0, 1.0) * self.brake_max;
-
-        ctx.bus.set(self.ports.f_road, f_aero + f_roll + f_grade + f_brake * v.signum());
+        
+        // Rolling resistance and brakes are friction; they oppose notion and hold a stopped car, but
+        // never push it. The gearbox owns the wheel speed, so it applies them
+        ctx.bus.set(self.ports.f_road, f_aero + f_grade);
+        ctx.bus.set(self.ports.f_fric, f_roll + f_brake);
     }
 }
