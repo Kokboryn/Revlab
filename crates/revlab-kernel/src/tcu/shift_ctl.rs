@@ -77,7 +77,8 @@ pub struct ShiftControl {
     pub k_dn_brake: f64,            // rpm the downshift line rises per m/s² of deceleration, braking
     pub min_hold_brake: f64,        // s, braking the box may step down again this soon
     pub n_open_brake: f64,          // rpm, braking in 2nd below this shaft speed, the stop shift goes early
-
+    pub t_lead: f64,                // s, from the upshift request to the end of the handover
+    pub n_up_ceiling: f64,          // rpm, a handover must be done below this: the limiter cuts just above
     phase: Phase,
     i_n: f64,
     seen_up: u32,
@@ -96,53 +97,20 @@ pub struct ShiftControl {
 impl ShiftControl {
     pub fn dq200() -> Self {
         ShiftControl {
-            t_cap_est: 320.0,
-            j_eng_est: 0.10,
-            rate: 10.0,
-            slip_detect: 20.0,
-            t_torque: 0.15,
-            t_inertia: 0.30,
-            margin: 0.15,
-            lock_slip: 30.0,
-            kp: 4.5e-4,
-            ki: 2.7e-3,
+            t_cap_est: 320.0, j_eng_est: 0.10, rate: 10.0, slip_detect: 20.0, t_torque: 0.15,
+            t_inertia: 0.30, margin: 0.15, lock_slip: 30.0, kp: 4.5e-4, ki: 2.7e-3,
             ratios: [13.633, 7.777, 5.252, 4.011, 3.067, 2.413, 1.957],
-            n_up_min: 1100.0,
-            n_dn_max: 4400.0,
-            // Starting values, not VW's calibration: early upshifts on light pedal, late on full, and a
-            // downshift line low enough that the engine never labors
+            n_up_min: 1100.0, n_dn_max: 4400.0,
             map_up: [(0.0, 1600.0), (0.25, 1900.0), (0.5, 2500.0), (0.75, 3200.0), (1.0, 4100.0)],
             map_dn: [(0.0, 1050.0), (0.25, 1150.0), (0.5, 1400.0), (0.75, 1700.0), (1.0, 2000.0)],
-            land_margin: 250.0,
-            kd_pedal: 0.95,
-            kd_land: 3800.0,
-            t_confirm: 0.2,
-            min_hold: 1.0,
-            mass_est: 1550.0,
-            r_wheel_est: 0.314,
-            eta_est: 0.92,
-            crr_est: 0.011,
-            cda_est: 0.62,
-            grade_dead: 2.0,
-            a_hold: 0.0,
-            n_hill_max: 4300.0,
-            v_stop_1st: 10.0,
-            k_dn_brake: 150.0,
-            min_hold_brake: 0.3,
-            n_open_brake: 1000.0,
-            phase: Phase::Idle,
-            i_n: 0.0,
-            seen_up: 0,
-            seen_dn: 0,
-            pre_dn: false,
-            want: 0,
-            want_t: 0.0,
-            since_shift: 0.0,
-            v_f: 0.0,
-            a_f: 0.0,
-            f_drive_f: 0.0,
-            primed: false,
-            cmd: [0.0; 2],
+            land_margin: 250.0, kd_pedal: 0.95, kd_land: 3800.0, t_confirm: 0.2, min_hold: 1.0,
+            mass_est: 1550.0, r_wheel_est: 0.314, eta_est: 0.92, crr_est: 0.011, cda_est: 0.62,
+            grade_dead: 2.0, a_hold: 0.0, n_hill_max: 4300.0, v_stop_1st: 10.0, k_dn_brake: 150.0,
+            min_hold_brake: 0.3, n_open_brake: 1000.0, phase: Phase::Idle, i_n: 0.0, seen_up: 0,
+            seen_dn: 0, pre_dn: false, want: 0, want_t: 0.0, since_shift: 0.0, v_f: 0.0, a_f: 0.0,
+            f_drive_f: 0.0, primed: false,  cmd: [0.0; 2],
+            t_lead: 0.40,   // 0.2 confirm + ~0.05 release + 0.15 handover
+            n_up_ceiling: 4350.0,
         }
     }
 }
@@ -244,14 +212,22 @@ impl Task for ShiftControl {
                 // Where each shift would put the engine
                 let up_land = if g < 7 { s.n_eng * self.ratios[g] / self.ratios[g - 1] } else { 0.0 };
                 let dn_land = if g > 1 { s.n_eng * self.ratios[g - 2] / self.ratios[g - 1] } else { f64::MAX };
+                // Two reasons to go up: the map line, or a climb that would carry the handover into
+                // the rev limiter. Confirm, release and handover take ~0.4 s, worth 750 rpm in 1st
+                // at full throttle, so the second is a prediction, and is judged on the predicted
+                // landing as well
+                let n_dot = (self.a_f / r * i_g * 60.0 / (2.0 * PI)).max(0.0);
+                let up_map = g < 7 && s.n_in > n_up && up_land >= n_dn + self.land_margin;
+                let up_ceiling = g < 7 && s.n_in + n_dot * self.t_lead > self.n_up_ceiling
+                    && (s.n_eng + n_dot * self.t_lead) * self.ratios[g] / i_g >= n_dn + self.land_margin;
                 let closed = s.clutch_state == ClutchState::Closed;
 
                 // In D the map asks. An upshift has to land clear of the new gear's downshift line, or the
                 // box would hunt between the two
                 let ask = if s.lever == Lever::Drive && closed {
                     let kick = p >= self.kd_pedal && dn_land <= self.kd_land;
-                    if g < 7 && s.n_in > n_up && up_land >= n_dn + self.land_margin && !braking
-                        && (!hill_hold || s.n_in > self.n_hill_max) { g + 1 }
+                    if (up_map || up_ceiling) && !braking
+                        && (!hill_hold || up_ceiling || s.n_in > self.n_hill_max) {g + 1}
                     else if g > 1 && (s.n_in < n_dn || kick) && dn_land <= self.n_dn_max && !(braking && g == 2) { g - 1 }
                     else { 0 }
                 } else { 0 };
