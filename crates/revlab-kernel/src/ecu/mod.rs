@@ -60,19 +60,19 @@ pub struct EcuState {
     pub q_smoke_limit: f64,
     pub t_loss: f64,
     pub t_ind_req: f64,
-    pub t_act: f64,         // Nm at the crank: what the engine actually makes, by the CUS's own model
-    pub t_no_icpt: f64,     // Nm at the crank, arbitration without the TCU's request
-    pub tcu_icpt_kind: u8,  // TCU torque intervention: 0 none, 1 cut (ceiling), 2 raise (floor)
-    pub tcu_icpt_t: f64,    // Nm at the crank
-    pub tcu_gear: u8,       // engaged gear, from the TCU over CAN
-    pub tcu_clutch: u8,     // driveline as the TCU measures it: 0 open, 1 slipping, 2 locked
-    pub tcu_shift: u8,      // shift phase: 0 idle, 1 prepare, 2+ clutches handing over
-    pub tcu_t_clutch: f64,  // Nm, what the clutches take from the engine
-    pub f_road_est: f64,    // N, road force learned by the observer while the driveline is locked
+    pub t_act: f64,                 // Nm at the crank: what the engine actually makes, by the CUS's own model
+    pub t_no_icpt: f64,             // Nm at the crank, arbitration without the TCU's request
+    pub tcu_icpt_kind: u8,          // TCU torque intervention: 0 none, 1 cut (ceiling), 2 raise (floor)
+    pub tcu_icpt_t: f64,            // Nm at the crank
+    pub tcu_gear: u8,               // engaged gear, from the TCU over CAN
+    pub tcu_clutch: u8,             // driveline as the TCU measures it: 0 open, 1 slipping, 2 locked
+    pub tcu_shift: u8,              // shift phase: 0 idle, 1 prepare, 2+ clutches handing over
+    pub tcu_t_clutch: f64,          // Nm, what the clutches take from the engine
+    pub f_road_est: f64,            // N, road force learned by the observer while the driveline is locked
     pub gb1_lost: bool,             // Gearbox_1 timed out
     pub gb1_dtc: diag::DtcState,    // stored lost-communication code for the TCU
-    pub p_set: f64,         // Pa, boost setpoint
-    pub vnt_cmd: f64,       // VNT position demand: 0 closed, 1 open
+    pub p_set: f64,                 // Pa, boost setpoint
+    pub vnt_cmd: f64,               // VNT position demand: 0 closed, 1 open
     pub pedal: f64,
     pub crank_valid: bool,
     pub cam_valid: bool,
@@ -81,7 +81,10 @@ pub struct EcuState {
     pub t_ect_c: f64,
     pub warmup_mult: f64,
     pub t_bias: f64,
-    pub p_em_est: f64,      // Pa, modeled exhaust manifold pressure
+    pub p_em_est: f64,              // Pa, modeled exhaust manifold pressure
+    pub n_crank_camwin: f64,        // crank averaged over the cam's last window
+    pub n_cam_camwin: f64,          // the can reading those two averages belong to
+    pub n_model_camwin: f64,        // model averaged over the same window
 }
 
 pub trait Task: Send {
@@ -143,50 +146,17 @@ impl Ecu {
     pub fn new(p: EcuPorts, q_init: f64) -> Self {
         Ecu {
             state: EcuState {
-                now: SimTime::ZERO,
-                n_crank: 0.0,
-                n_cam: 0.0,
-                n_eng: 0.0,
-                n_eng_seq: 0,
+                now: SimTime::ZERO, n_crank: 0.0, n_cam: 0.0, n_eng: 0.0, n_eng_seq: 0,
                 speed_source: diag::SpeedSource::Crank,
-                fault_mem: [diag::FaultEntry::CLEAR; diag::N_SENSORS],
-                degraded: false,
-                reqs: [torque::TorqueRequest::INACTIVE; torque::N_SOURCES],
-                t_arb: 0.0,
-                q_cmd: q_init,
-                n_model: 0.0,
-                target_rpm: 800.0,
-                p_im_meas: 101325.0,
-                t_im_meas: 293.15,
-                m_air_est: 0.0,
-                q_smoke_limit: 0.0,
-                model_valid: false,
-                freeze_adaptation: false,
-                unattributable: false,
-                t_loss: 0.0,
-                t_ind_req: 0.0,
-                t_act: 0.0,
-                t_no_icpt: 0.0,
-                tcu_icpt_kind: 0,
-                tcu_icpt_t: 0.0,
-                p_set: 101325.0,
-                vnt_cmd: 1.0,
-                pedal: 0.0,
-                crank_valid: true,
-                cam_valid: true,
-                m_maf_meas: 0.0,
-                m_air_est_sd: 0.5,
-                t_ect_c: 20.0,
-                warmup_mult: 1.0,
-                t_bias: 0.0,
-                p_em_est: 101_325.0,
-                tcu_gear: 0,
-                tcu_clutch: 0,
-                tcu_shift: 0,
-                tcu_t_clutch: 0.0,
-                f_road_est: 0.0,
-                gb1_lost: false,
-                gb1_dtc: diag::DtcState::Passed,
+                fault_mem: [diag::FaultEntry::CLEAR; diag::N_SENSORS], degraded: false,
+                reqs: [torque::TorqueRequest::INACTIVE; torque::N_SOURCES], t_arb: 0.0, q_cmd: q_init,
+                n_model: 0.0, target_rpm: 800.0, p_im_meas: 101325.0, t_im_meas: 293.15, m_air_est: 0.0,
+                q_smoke_limit: 0.0, model_valid: false, freeze_adaptation: false, unattributable: false,
+                t_loss: 0.0, t_ind_req: 0.0, t_act: 0.0, t_no_icpt: 0.0, tcu_icpt_kind: 0, tcu_icpt_t: 0.0,
+                p_set: 101325.0, vnt_cmd: 1.0, pedal: 0.0, crank_valid: true, cam_valid: true, m_maf_meas: 0.0,
+                m_air_est_sd: 0.5, t_ect_c: 20.0, warmup_mult: 1.0, t_bias: 0.0, p_em_est: 101_325.0,
+                tcu_gear: 0, tcu_clutch: 0, tcu_shift: 0, tcu_t_clutch: 0.0, f_road_est: 0.0, gb1_lost: false,
+                gb1_dtc: diag::DtcState::Passed, n_crank_camwin: 0.0, n_model_camwin: 0.0, n_cam_camwin: 0.0,
             },
             tasks: Vec::new(),
             p,

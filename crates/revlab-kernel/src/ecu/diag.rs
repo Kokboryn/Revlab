@@ -19,6 +19,61 @@ pub struct FaultEntry {
     pub freeze_time_s: f64,
 }
 
+/// Puts the crank on the cam's time base. A cam reading is the mean speed over its last lobe interval
+/// (30/N s: 13.5 ms at idle) and then holds until the next edge, so against the crank's live reading
+/// it is up to 1.5 intervals late, hundreds of rpm between two healthy sensors on a tip-in. Averaged
+/// over the same window the two agree to within noise, so the monitor compares  like with like instead
+/// of widening its tolerance by the lag. Runs every 1 ms, so an edge is never more than 1 ms old here
+pub struct CamWindow {
+    hist: [(f64, f64); 128],    // (crank, model) once per ms, ring: covers a cam window down to ~235 rpm
+    head: usize,
+    filled: usize,
+    last_cam: f64,
+    primed: bool,
+}
+
+impl CamWindow {
+    pub fn new() -> Self {
+        CamWindow { hist: [(0.0, 0.0); 128], head: 0, filled: 0, last_cam: 0.0, primed: false }
+    }
+}
+
+impl Task for CamWindow {
+    fn name(&self) -> &'static str { "CamWindow" }
+
+    fn run(&mut self, s: &mut EcuState) {
+        let len_hist = self.hist.len();
+        self.hist[self.head] = (s.n_crank, s.n_model);
+        self.head = (self.head + 1) % len_hist;
+        self.filled = (self.filled + 1).min(len_hist);
+        if !self.primed {
+            s.n_crank_camwin = s.n_crank;
+            s.n_model_camwin = s.n_model;
+            s.n_cam_camwin = s.n_cam;
+            self.last_cam = s.n_cam;
+            self.primed = true;
+            return;
+        }
+        // Every cam edge carries fresh noise, so a reading that hasn't changes is no new edge
+        if s.n_cam == self.last_cam { return; }
+        self.last_cam = s.n_cam;
+        // The reading covers the interval that ended at this edge, and its length follows from the reading
+        let len = ((30.0 / s.n_cam.max(1.0)) * 1000.0).round() as usize;
+        let len = len.clamp(1, self.filled);
+        let (mut c, mut m) = (0.0, 0.0);
+        for i in 1..=len {
+            let (ci, mi) = self.hist[(self.head + len_hist - i) % len_hist];
+            c += ci;
+            m += mi;
+        }
+        s.n_crank_camwin = c / len as f64;
+        s.n_model_camwin = m / len as f64;
+        // The pair travels together: a check that runs between a cam edge and this task must not compare
+        // the new reading aa=gainst the previous edge's window
+        s.n_cam_camwin = s.n_cam;
+    }
+}
+
 impl FaultEntry {
     pub const CLEAR: Self = FaultEntry {
         state: DtcState::Passed, fail_count: 0,
@@ -28,12 +83,13 @@ impl FaultEntry {
 
 /// Three-way vote: crank, cam, and the ECU's own model.
 ///
-/// Tolerance is dynamic. The cam's disagreement during a transient is predictable - it fires every 180 crank degrees,
-/// so its reading is stale by about two periods (2 x 30/N seconds). Rather than blinding the monitor during transients,
-/// widen the threshold by exactly the error the lag accounts for. A genuine drift is slow, so it barely widens at all;
-/// a 6000 rpm/s load step widens it hugely
+/// The cam is compared against the crank averaged over the cam's own window (CamWindow), so a transient
+/// doesn't open a gap between two healthy sensors. Only the timing slop left after matching, edge
+/// quantization and the crank's tooth windows, widens the tolerance, so the monitor stays sharp through
+/// a load step instead of going blind for it
 pub struct SpeedPlausibility {
     pub threshold_rpm: f64,     // static tolerance
+    pub t_resid: f64,           // s, timing left after matching windows, as rpm per rpm/s
     pub freeze_frac: f64,       // fraction of tolerance that freezes the observer
     pub confirm_count: i32,
     last_n: f64,
@@ -51,6 +107,7 @@ impl Default for SpeedPlausibility {
     fn default() -> Self {
         SpeedPlausibility {
             threshold_rpm: 40.0,
+            t_resid: 0.004,
             freeze_frac: 0.25,
             confirm_count: 30,
             last_n: 0.0,
@@ -90,10 +147,9 @@ impl SpeedPlausibility {
         false
     }
 
-    /// Two cam periods worth of speed change, in rpm
-    fn lag_allowance(&self, n_eng: f64) -> f64 {
-        let period = 30.0 / n_eng.max(100.0);
-        2.0 * period * self.dn_dt.abs()
+    /// What the matched windows still can't line up, in rpm
+    fn lag_allowance(&self) -> f64 {
+        self.t_resid * self.dn_dt.abs()
     }
 }
 
@@ -152,8 +208,8 @@ impl Task for SpeedPlausibility {
         self.last_t = Some(s.now);
         self.last_n = s.n_eng;
 
-        let tol = self.threshold_rpm + self.lag_allowance(s.n_eng);
-        let delta = (s.n_crank - s.n_cam).abs();
+        let tol = self.threshold_rpm + self.lag_allowance();
+        let delta = (s.n_crank_camwin - s.n_cam_camwin).abs();
 
         // Freeze well before the fault threshold: the observer's correction pulls toward the CONTROL sensor,
         // so a fault there contaminates the model meant to arbitrate it.
@@ -170,8 +226,10 @@ impl Task for SpeedPlausibility {
             return;
         }
 
+        // Each sensor against the model over the same time it measured: crank and model live, cam and
+        // model over the cam's window
         let d_crank = (s.n_crank - s.n_model).abs();
-        let d_cam   = (s.n_cam   - s.n_model).abs();
+        let d_cam   = (s.n_cam_camwin   - s.n_model_camwin).abs();
 
         // Comparative, not absolute: attribute only when one sensor is decisively closer to the model.
         let decisive = (d_crank - d_cam).abs() > tol * self.freeze_frac;

@@ -11,7 +11,7 @@ use revlab_kernel::sensors::{crank_wheel::CrankWheel};
 use revlab_kernel::ecu::{Ecu, EcuPorts, Rate, idle::IdleTask};
 use revlab_kernel::ecu::torque::{TorqueArbiter, TorqueToFuel, TcuIntervention};
 use revlab_kernel::telemetry::{CsvLogger, UdpStreamer};
-use revlab_kernel::ecu::diag::{SpeedPlausibility, LimpMode};
+use revlab_kernel::ecu::diag::{SpeedPlausibility, LimpMode, CamWindow};
 use revlab_kernel::ecu::observer::SpeedObserver;
 use revlab_kernel::sensors::cam_wheel::CamWheel;
 use scenario::{Scenario, Event, CanFrame, parse_args};
@@ -337,6 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tcu_shift: can_shift_phase, tcu_t_clutch: can_t_clutch, f_road_est, gb1_ctr, dtc_comm,
             t_no_icpt
         }, 6.0)
+            .task(Rate::Ms1, Box::new(CamWindow::new()))
             .task(Rate::Ms10, Box::new(WarmupComp::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedObserver::di_diesel_1_6()))
             .task(Rate::Ms10, Box::new(SpeedPlausibility::default()))
