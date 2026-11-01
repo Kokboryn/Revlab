@@ -13,6 +13,7 @@ pub struct DriverDemand {
     pub t_overrun: f64,     // Nm at closed pedal (negative)
     pub n_cut: f64,         // rpm, overrun drag is full above this and fades to zero at the idle target
     pub p_drag: f64,        // pedal over which overrun drag blends out; above it the request is positive
+    pub t_idle_drag: f64,     // Nm at closed pedal at idle (negative): a little less than idle ever needs
 }
 
 impl DriverDemand {
@@ -22,7 +23,7 @@ impl DriverDemand {
             t_max_curve: Map1d::new(
                 vec![1000.0, 1500.0, 1750.0, 3300.0, 3600.0, 4000.0, 4500.0],
                 vec![180.0, 240.0, 250.0, 250.0, 233.4, 210.1, 185.0],
-        ), t_overrun: -40.0, n_cut: 1300.0, p_drag: 0.04 }
+        ), t_overrun: -40.0, n_cut: 1300.0, p_drag: 0.04, t_idle_drag: -5.0 }
     }
 }
 
@@ -37,7 +38,11 @@ impl Task for DriverDemand {
         // comes back where the faded drag no longer covers friction, around 1100 rpm
         let span = (self.n_cut - s.target_rpm).max(1.0);
         let fade = ((s.n_eng - s.target_rpm) / span).clamp(0.0, 1.0);
-        let t_closed = self.t_overrun * fade;
+        // Fades to a small negative request at idle, not to zero. Zero would make the drag itself the
+        // idle controller (proportional only, so it parks off target whenever the loss model is off);
+        // slightly below anything idle needs, the idle floor is always in charge there
+        let t_closed = self.t_overrun * fade + self.t_idle_drag * (1.0 - fade);
+
         // The first few percent of travel blend the overrun drag out; above that the pedal asks for its
         // share of full torque. A straight line from overrun to full spends the first seventh of the
         // pedal cancelling drag, which makes light throttle coast

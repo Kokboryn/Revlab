@@ -3,27 +3,24 @@ use super::torque::{ReqKind, Source, TorqueRequest};
 use revlab_core::SimTime;
 
 pub struct IdleTask {
-    pub t_ff: f64,      // Nm. base torque to overcome friction
-    kp: f64,            // Nm/rpm
-    ki: f64,            // Nm/(rpm·s)
+    pub t_ff: f64,          // Nm. base torque to overcome friction
+    kp: f64,                // Nm/rpm
+    ki: f64,                // Nm/(rpm·s)
     degraded_scale: f64,    // gain derate on a substitute signal
     integ: f64,
     t_min: f64,
     t_max: f64,
+    j_band: f64,            // rpm, above target the integrator only runs this close to it
     last_update: Option<SimTime>,
-    last_seq: u64,      // init 0
+    last_seq: u64,          // init 0
 }
 
 impl IdleTask {
     pub fn new(t_ff: f64) -> Self {
         IdleTask {
             t_ff,
-            kp: 0.09, ki: 0.426,
-            degraded_scale: 0.5,
-            integ: 0.0,
-            t_min: -60.0, t_max: 250.0,
-            last_update: None,
-            last_seq: 0,
+            kp: 0.09, ki: 0.426, degraded_scale: 0.5, integ: 0.0, t_min: -60.0, t_max: 250.0,
+            j_band: 50.0, last_update: None, last_seq: 0,
         }
     }
 }
@@ -58,7 +55,12 @@ impl Task for IdleTask {
         // idle. Above idle the driver's drag is in charge, and an integrator left running there winds
         // down until, when the engine finally does fall to idle, the floor is far too low to catch it
         let in_charge = s.t_arb <= t + 1.0;
-        if (t - u).abs() < 1e-12 && (in_charge || err > 0.0) { self.integ = trial; }
+        // Integrate while the floor is what the engine is getting, but above target only close to it,
+        // unless the integrator is holding torque it no longer needs: that must always be able to unwind,
+        //or a dip below idle (which always integrates up) leaves the engine parked high
+        if (t - u).abs() < 1e-12 && ((in_charge && (err > -self.j_band || self.integ > 0.0)) || err > 0.0) {
+            self.integ = trial;
+        }
 
         s.reqs[Source::Idle as usize] = TorqueRequest {
             kind: ReqKind::MinLimit,    // idle control is a floor, not a target

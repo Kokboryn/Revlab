@@ -286,9 +286,12 @@ impl Task for ShiftControl {
                 } else { Phase::Idle }
             }
 
-            // Braking cancels an upshift that hasn't touched a clutch yet. It never happened, so it
-            // doesn't hold off the downshifts either
-            Phase::Prepare { to } if to > g && braking => { self.since_shift = self.min_hold; Phase::Idle }
+            // Braking cancels an upshift that hasn't handed any torque across yet. It never happened,
+            // so it doesn't hold off the downshifts either
+            Phase::Prepare { to } | Phase::Release { to } if to > g && braking => {
+                self.since_shift = self.min_hold;
+                Phase::Idle
+            }
 
             Phase::Prepare { to } => {
                 s.sel[shaft_of(to)] = to;
